@@ -1,0 +1,57 @@
+.TH ASROOT 1 "2026-04-15" "0.1" "asroot Manual"
+.SH NAME
+asroot \- minimalist sudo alternative
+.SH SYNOPSIS
+.B asroot
+[\fI-v\fR] [\fI-e\fR] [\fI-u user\fR] \fIcommand\fR [\fIargs...\fR]
+.SH DESCRIPTION
+.B asroot
+allows authorized users to execute commands as another user (defaulting to root) 
+based on rules defined in /etc/asroot/conf.
+.SH OPTIONS
+.TP
+.BR \-u " \fIuser\fR"
+Run the command as the specified user.
+.TP
+.BR \-e ", " \-\-edit\-config
+Open /etc/asroot/conf in the editor specified by $EDITOR or $VISUAL.
+.TP
+.BR \-v ", " \-\-version
+Print version and exit.
+.TP
+.BR \-h ", " \-\-help
+Print help message and exit.
+.SH CONFIGURATION FILE
+The configuration file is located at \fB/etc/asroot/conf\fR. It must be owned by root and not writable by others.
+Each line follows the format:
+.IP
+\fBrule\fR [\fBoptions\fR] \fBuser\fR \fBas\fR \fBtarget\fR [\fBcmd\fR \fIcommand\fR [\fIargs\fR]]
+.PP
+\fBrulev\fR: \fBpermit\fR or \fBdeny\fR.
+.PP
+\fBoptions\fR:
+.RS
+.TP
+\fBnopass\fR
+Do not prompt for a password.
+.TP
+\fBpersist\fR[=\fIduration\fR]
+Cache authentication for the specified duration (e.g., 5m, 1h).
+.TP
+\fBkeepenv\fR {\fIVARS\fR}
+Keep the specified environment variables.
+.RE
+.SH FILES
+.TP
+.B /etc/asroot/conf
+Configuration file.
+.TP
+.B /etc/pam.d/asroot
+PAM configuration service.
+.TP
+.B /run/asroot/
+Directory for persistence timestamps.
+.SH AUTHORS
+pdlayer
+.SH LICENSE
+ISC
