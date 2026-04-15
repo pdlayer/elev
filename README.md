@@ -24,9 +24,8 @@ make
 ## Run
 
 ```sh
-./asroot <command>
-./asroot -u <user> <command>
-./asroot --edit-config
+asroot <command>
+asroot -u <user> <command>
 ```
 
 Install:
