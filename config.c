@@ -88,26 +88,27 @@ struct rule *
 parse_config(const char *path)
 {
 	FILE *fp = fopen(path, "r");
-	char line[1024];
-	struct rule *head = NULL, *last = NULL;
+	struct rule *head = NULL, *last = NULL, *r;
+	char *line = NULL;
+	size_t len = 0;
+	char *p, *tok;
 
 	if (!fp)
 		return NULL;
 
-	while (fgets(line, sizeof(line), fp)) {
-		char *p = line;
-		char *tok;
-		struct rule *r;
-
-		p = trim(p);
+	while (getline(&line, &len, fp) != -1) {
+		p = trim(line);
 		if (*p == '\0' || *p == '#' || (p[0] == '/' && p[1] == '/'))
 			continue;
 
 		r = calloc(1, sizeof(*r));
 		if (!r)
-			die("out of memory");
+			die("malloc");
 
 		tok = next_token(&p);
+		if (!tok)
+			goto skip;
+
 		if (strcmp(tok, "permit") == 0)
 			r->type = RULE_PERMIT;
 		else if (strcmp(tok, "deny") == 0)
@@ -127,11 +128,15 @@ parse_config(const char *path)
 				if (e && e[0] == '{') {
 					char *inner = strdup(e + 1);
 					char *saveptr;
+					char *v;
 					if (inner[strlen(inner)-1] == '}')
 						inner[strlen(inner)-1] = '\0';
-					char *v = strtok_r(inner, ", ", &saveptr);
+					v = strtok_r(inner, ", ", &saveptr);
 					while (v && r->keepenv_count < MAX_ENV_KEEP) {
-						r->keepenv[r->keepenv_count++] = strdup(trim(v));
+						char *val = strdup(trim(v));
+						if (!val)
+							die("malloc");
+						r->keepenv[r->keepenv_count++] = val;
 						v = strtok_r(NULL, ", ", &saveptr);
 					}
 					free(inner);
@@ -150,6 +155,8 @@ parse_config(const char *path)
 		} else {
 			r->who = strdup(tok);
 		}
+		if (!r->who)
+			die("malloc");
 
 		tok = next_token(&p);
 		if (!tok || strcmp(tok, "as") != 0)
@@ -159,26 +166,38 @@ parse_config(const char *path)
 		if (!tok)
 			goto skip;
 		r->as_user = strdup(tok);
+		if (!r->as_user)
+			die("malloc");
 
 		while ((tok = next_token(&p))) {
 			if (strcmp(tok, "cmd") == 0) {
-				r->cmd = strdup(next_token(&p));
-				char *args_tok = next_token(&p);
-				if (args_tok) {
-					if (strcmp(args_tok, "*") == 0) {
-						r->args[0] = strdup("*");
-						r->argc = 1;
-					} else {
-						char *saveptr;
-						char *arg = strtok_r(args_tok, ",", &saveptr);
-						while (arg && r->argc < MAX_ARGC) {
-							r->args[r->argc++] = strdup(arg);
-							arg = strtok_r(NULL, ",", &saveptr);
-						}
+				char *cmd_path = next_token(&p);
+				if (!cmd_path)
+					goto skip;
+				if (cmd_path[0] != '/')
+					die("config: absolute path required: %s", cmd_path);
+				r->cmd = strdup(cmd_path);
+				if (!r->cmd)
+					die("malloc");
+				while ((tok = next_token(&p))) {
+					if (strcmp(tok, "denycmd") == 0) {
+						r->deny_cmd = strdup(next_token(&p));
+						if (!r->deny_cmd)
+							die("malloc");
+						break;
+					}
+					if (r->argc < MAX_ARGC) {
+						r->args[r->argc] = strdup(tok);
+						if (!r->args[r->argc])
+							die("malloc");
+						r->argc++;
 					}
 				}
+				break;
 			} else if (strcmp(tok, "denycmd") == 0) {
 				r->deny_cmd = strdup(next_token(&p));
+				if (!r->deny_cmd)
+					die("malloc");
 			}
 		}
 
@@ -193,6 +212,7 @@ parse_config(const char *path)
 		free_rules(r);
 	}
 
+	free(line);
 	fclose(fp);
 	return head;
 }
@@ -201,9 +221,10 @@ bool
 match_rule(const struct rule *r, const struct context *ctx)
 {
 	bool user_match = false;
+	int i;
 
 	if (r->is_group) {
-		for (int i = 0; i < ctx->group_count; i++) {
+		for (i = 0; i < ctx->group_count; i++) {
 			struct group *gr = getgrgid(ctx->groups[i]);
 			if (gr && strcmp(gr->gr_name, r->who) == 0) {
 				user_match = true;
@@ -227,29 +248,35 @@ match_rule(const struct rule *r, const struct context *ctx)
 		if (strcmp(r->cmd, ctx->cmd_argv[0]) != 0)
 			return false;
 
-		if (r->argc > 0) {
-			if (strcmp(r->args[0], "*") == 0)
+		for (i = 0; i < r->argc; i++) {
+			char *arg_copy, *saveptr, *val;
+			bool found = false;
+
+			if (strcmp(r->args[i], "*") == 0)
 				return true;
 
-			if (ctx->cmd_argc <= 1)
+			if (i + 1 >= ctx->cmd_argc)
 				return false;
 
-			bool arg_found = false;
-			for (int i = 0; i < r->argc; i++) {
-				if (strcmp(r->args[i], ctx->cmd_argv[1]) == 0) {
-					arg_found = true;
+			arg_copy = strdup(r->args[i]);
+			if (!arg_copy)
+				die("malloc");
+			val = strtok_r(arg_copy, ",", &saveptr);
+			while (val) {
+				if (strcmp(trim(val), ctx->cmd_argv[i+1]) == 0) {
+					found = true;
 					break;
 				}
+				val = strtok_r(NULL, ",", &saveptr);
 			}
-			if (!arg_found)
-				return false;
+			free(arg_copy);
 
-			if (ctx->cmd_argc > 2)
-				return false;
-		} else {
-			if (ctx->cmd_argc > 1)
+			if (!found)
 				return false;
 		}
+
+		if (ctx->cmd_argc > r->argc + 1)
+			return false;
 	}
 
 	return true;
@@ -258,15 +285,18 @@ match_rule(const struct rule *r, const struct context *ctx)
 void
 free_rules(struct rule *rules)
 {
+	struct rule *next;
+	int i;
+
 	while (rules) {
-		struct rule *next = rules->next;
+		next = rules->next;
 		free(rules->who);
 		free(rules->as_user);
 		free(rules->cmd);
 		free(rules->deny_cmd);
-		for (int i = 0; i < rules->argc; i++)
+		for (i = 0; i < rules->argc; i++)
 			free(rules->args[i]);
-		for (int i = 0; i < rules->keepenv_count; i++)
+		for (i = 0; i < rules->keepenv_count; i++)
 			free(rules->keepenv[i]);
 		free(rules);
 		rules = next;

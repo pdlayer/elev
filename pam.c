@@ -1,12 +1,14 @@
 #include <security/pam_appl.h>
 #include <security/pam_misc.h>
-#include <sys/stat.h>
-#include <sys/types.h>
+
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -17,17 +19,40 @@ static struct pam_conv conv = {
 	NULL
 };
 
+static void
+get_tty_path(const char *user, char *buf, size_t len)
+{
+	char *tty = ttyname(STDIN_FILENO);
+	char *p;
+
+	if (tty) {
+		if (strncmp(tty, "/dev/", 5) == 0)
+			tty += 5;
+		snprintf(buf, len, "%s/%s_%s", ELEV_RUN, user, tty);
+		for (p = buf + strlen(ELEV_RUN) + 1; *p; p++)
+			if (*p == '/')
+				*p = '_';
+	} else {
+		snprintf(buf, len, "%s/%s_notty", ELEV_RUN, user);
+	}
+}
+
 static bool
 check_persist(const char *user, long limit)
 {
-	char path[PATH_MAX];
 	struct stat st;
 	time_t now = time(NULL);
+	char path[PATH_MAX];
 
-	snprintf(path, sizeof(path), "%s/%s", ELEV_RUN, user);
+	get_tty_path(user, path, sizeof(path));
 
-	if (stat(path, &st) != 0)
+	if (lstat(path, &st) != 0)
 		return false;
+
+	if (!S_ISREG(st.st_mode)) {
+		unlink(path);
+		return false;
+	}
 
 	if (limit == -1)
 		return true;
@@ -44,14 +69,22 @@ static void
 update_persist(const char *user)
 {
 	char path[PATH_MAX];
+	struct stat st;
 	int fd;
 
-	mkdir(ELEV_RUN, 0700);
-	snprintf(path, sizeof(path), "%s/%s", ELEV_RUN, user);
+	if (mkdir(ELEV_RUN, 0700) == -1) {
+		if (errno != EEXIST)
+			die("mkdir: %s: %s", ELEV_RUN, strerror(errno));
+		if (stat(ELEV_RUN, &st) == 0 && st.st_uid != 0)
+			die("security: %s: not owned by root", ELEV_RUN);
+	}
+	get_tty_path(user, path, sizeof(path));
 
-	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-	if (fd != -1)
-		close(fd);
+	unlink(path);
+	fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	if (fd == -1)
+		die("open: %s: %s", path, strerror(errno));
+	close(fd);
 }
 
 int

@@ -49,7 +49,6 @@ bool match_rule(const struct rule *r, const struct context *ctx);
 void free_rules(struct rule *rules);
 
 int authenticate_pam(const char *user, bool nopass, long persist);
-void clean_env(const char **keep, int keep_count);
 
 void die(const char *fmt, ...);
 
