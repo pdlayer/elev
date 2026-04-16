@@ -1,0 +1,8 @@
+post_install() {
+	echo ">>> To use elev as a sudo replacement, you can create a symlink:"
+	echo ">>> ln -s /usr/bin/elev /usr/bin/sudo"
+}
+
+post_upgrade() {
+	post_install
+}

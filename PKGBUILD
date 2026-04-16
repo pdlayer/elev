@@ -6,8 +6,9 @@ arch=('x86_64')
 license=('ISC')
 depends=('pam')
 makedepends=('gcc' 'make')
-source=('elev.c' 'config.c' 'pam.c' 'elev.h' 'elev.1' 'Makefile' 'elev.bash' 'elev.zsh')
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+install=elev.install
+source=('elev.c' 'config.c' 'pam.c' 'elev.h' 'elev.1' 'Makefile' 'elev.bash' 'elev.zsh' 'elev.install')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 build() {
 	make
