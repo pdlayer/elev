@@ -29,7 +29,7 @@ check_persist(const char *user, long limit)
 	if (stat(path, &st) != 0)
 		return false;
 
-	if (limit == -1) // session persist
+	if (limit == -1)
 		return true;
 
 	if (now - st.st_mtime > limit) {

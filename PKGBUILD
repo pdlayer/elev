@@ -1,4 +1,3 @@
-# Maintainer: pdlayer
 pkgname=elev
 pkgver=0.1
 pkgrel=1
@@ -17,10 +16,8 @@ build() {
 package() {
 	make DESTDIR="$pkgdir" PREFIX="/usr" install
 	
-	# Create config directory
 	install -dm700 "$pkgdir/etc/elev"
 	
-	# Create default PAM config for Arch
 	mkdir -p "$pkgdir/etc/pam.d"
 	cat > "$pkgdir/etc/pam.d/elev" <<EOF
 auth        include     system-auth

@@ -243,12 +243,10 @@ match_rule(const struct rule *r, const struct context *ctx)
 			}
 			if (!arg_found)
 				return false;
-			
-			// If we matched a specific argument from a list, we don't allow MORE args unless it was *
+
 			if (ctx->cmd_argc > 2)
 				return false;
 		} else {
-			// No args allowed if cmd is specified without * or a list
 			if (ctx->cmd_argc > 1)
 				return false;
 		}
