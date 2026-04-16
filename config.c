@@ -252,15 +252,13 @@ match_rule(const struct rule *r, const struct context *ctx)
 			char *arg_copy, *saveptr, *val;
 			bool found = false;
 
-			if (strcmp(r->args[i], "*") == 0)
-				return true;
-
 			if (i + 1 >= ctx->cmd_argc)
 				return false;
 
 			arg_copy = strdup(r->args[i]);
 			if (!arg_copy)
 				die("malloc");
+
 			val = strtok_r(arg_copy, ",", &saveptr);
 			while (val) {
 				if (strcmp(trim(val), ctx->cmd_argv[i+1]) == 0) {
