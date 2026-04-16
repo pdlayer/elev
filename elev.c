@@ -12,7 +12,7 @@
 #include <syslog.h>
 #include <getopt.h>
 
-#include "asroot.h"
+#include "elev.h"
 
 extern char **environ;
 
@@ -30,8 +30,8 @@ die(const char *fmt, ...)
 static void
 usage(void)
 {
-	fprintf(stderr, "asroot 0.1\n");
-	fprintf(stderr, "usage: asroot [-v] [-e] [-u user] command [args...]\n");
+	fprintf(stderr, "elev 0.1\n");
+	fprintf(stderr, "usage: elev [-v] [-e] [-u user] command [args...]\n");
 	exit(1);
 }
 
@@ -90,13 +90,13 @@ main(int argc, char **argv)
 		{0, 0, 0, 0}
 	};
 
-	openlog("asroot", LOG_CONS | LOG_PID, LOG_AUTHPRIV);
+	openlog("elev", LOG_CONS | LOG_PID, LOG_AUTHPRIV);
 
 	ctx.target_user = "root";
 	while ((ch = getopt_long(argc, argv, "+u:vhe", long_options, NULL)) != -1) {
 		switch (ch) {
 		case 'u': ctx.target_user = optarg; break;
-		case 'v': printf("asroot 0.1\n"); exit(0);
+		case 'v': printf("elev 0.1\n"); exit(0);
 		case 'e': edit_mode = 1; break;
 		case 'h': usage(); break;
 		default: usage();
@@ -108,7 +108,7 @@ main(int argc, char **argv)
 		if (!editor) editor = getenv("VISUAL");
 		if (!editor) editor = "vi";
 		edit_argv[0] = editor;
-		edit_argv[1] = ASROOT_CONF;
+		edit_argv[1] = ELEV_CONF;
 		edit_argv[2] = NULL;
 		ctx.cmd_argv = edit_argv;
 		ctx.cmd_argc = 2;
@@ -132,8 +132,8 @@ main(int argc, char **argv)
 	ctx.target_uid = pw->pw_uid;
 	ctx.target_gid = pw->pw_gid;
 
-	check_config_security(ASROOT_CONF);
-	rules = parse_config(ASROOT_CONF);
+	check_config_security(ELEV_CONF);
+	rules = parse_config(ELEV_CONF);
 	if (!rules) die("config error");
 
 	for (r = rules; r; r = r->next) {

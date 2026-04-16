@@ -1,12 +1,12 @@
-#ifndef ASROOT_H
-#define ASROOT_H
+#ifndef ELEV_H
+#define ELEV_H
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
 
-#define ASROOT_CONF "/etc/asroot/conf"
-#define ASROOT_RUN "/run/asroot"
+#define ELEV_CONF "/etc/elev/conf"
+#define ELEV_RUN "/run/elev"
 #define MAX_ARGC 64
 #define MAX_ENV_KEEP 64
 

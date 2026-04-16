@@ -10,7 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "asroot.h"
+#include "elev.h"
 
 static struct pam_conv conv = {
 	misc_conv,
@@ -24,7 +24,7 @@ check_persist(const char *user, long limit)
 	struct stat st;
 	time_t now = time(NULL);
 
-	snprintf(path, sizeof(path), "%s/%s", ASROOT_RUN, user);
+	snprintf(path, sizeof(path), "%s/%s", ELEV_RUN, user);
 
 	if (stat(path, &st) != 0)
 		return false;
@@ -46,8 +46,8 @@ update_persist(const char *user)
 	char path[PATH_MAX];
 	int fd;
 
-	mkdir(ASROOT_RUN, 0700);
-	snprintf(path, sizeof(path), "%s/%s", ASROOT_RUN, user);
+	mkdir(ELEV_RUN, 0700);
+	snprintf(path, sizeof(path), "%s/%s", ELEV_RUN, user);
 
 	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (fd != -1)
@@ -66,7 +66,7 @@ authenticate_pam(const char *user, bool nopass, long persist)
 	if (persist != 0 && check_persist(user, persist))
 		return 0;
 
-	retval = pam_start("asroot", user, &conv, &pamh);
+	retval = pam_start("elev", user, &conv, &pamh);
 	if (retval != PAM_SUCCESS)
 		return -1;
 

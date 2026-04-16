@@ -2,14 +2,16 @@ CC = cc
 CFLAGS = -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wpedantic -O2
 LDFLAGS = -lpam -lpam_misc
 
-SRC = asroot.c config.c pam.c
+SRC = elev.c config.c pam.c
 BUILDDIR = build
 OBJ = $(SRC:%.c=$(BUILDDIR)/%.o)
-BIN = $(BUILDDIR)/asroot
+BIN = $(BUILDDIR)/elev
 
 PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
 MANDIR = $(PREFIX)/share/man/man1
+BASHCOMPDIR = $(PREFIX)/share/bash-completion/completions
+ZSHCOMPDIR = $(PREFIX)/share/zsh/site-functions
 
 all: $(BIN)
 
@@ -21,12 +23,16 @@ $(BUILDDIR)/%.o: %.c
 	$(CC) -c $(CFLAGS) $< -o $@
 
 install: $(BIN)
-	install -Dm4755 $(BIN) $(DESTDIR)$(BINDIR)/asroot
-	install -Dm644 asroot.1 $(DESTDIR)$(MANDIR)/asroot.1
+	install -Dm4755 $(BIN) $(DESTDIR)$(BINDIR)/elev
+	install -Dm644 elev.1 $(DESTDIR)$(MANDIR)/elev.1
+	install -Dm644 elev.bash $(DESTDIR)$(BASHCOMPDIR)/elev
+	install -Dm644 elev.zsh $(DESTDIR)$(ZSHCOMPDIR)/_elev
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/asroot
-	rm -f $(DESTDIR)$(MANDIR)/asroot.1
+	rm -f $(DESTDIR)$(BINDIR)/elev
+	rm -f $(DESTDIR)$(MANDIR)/elev.1
+	rm -f $(DESTDIR)$(BASHCOMPDIR)/elev
+	rm -f $(DESTDIR)$(ZSHCOMPDIR)/_elev
 
 clean:
 	rm -rf $(BUILDDIR)

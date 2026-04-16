@@ -1,12 +1,12 @@
-# asroot
+# elev
 
 minimal sudo alternative
 
-`asroot` is a minimalist, security-focused alternative to `sudo` written in C.
+`elev` is a minimalist, security-focused alternative to `sudo` written in C.
 
 ## What It Is
 
-- `asroot` binary
+- `elev` binary
 - PAM authentication
 - rule-based execution engine
 
@@ -24,21 +24,21 @@ make
 ## Run
 
 ```sh
-asroot <command>
-asroot -u <user> <command>
+elev <command>
+elev -u <user> <command>
 ```
 
 Install:
 
 ```sh
 make install
-chown root:root /usr/local/bin/asroot
-chmod 4755 /usr/local/bin/asroot
+chown root:root /usr/local/bin/elev
+chmod 4755 /usr/local/bin/elev
 ```
 
 ## Configuration
 
-Rules in `/etc/asroot/conf` (owned by root, `600`).
+Rules in `/etc/elev/conf` (owned by root, `600`).
 
 Format:
 `permit|deny [options] <user>|:<group> as <target> [cmd <command> [<args>]]`
@@ -64,7 +64,7 @@ permit persist=5m user2 as *
 
 ## Notes
 
-- Requires `/etc/pam.d/asroot`.
+- Requires `/etc/pam.d/elev`.
 - Whitelist-only environment.
 - Strict argument matching.
 

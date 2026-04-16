@@ -7,7 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "asroot.h"
+#include "elev.h"
 
 static char *
 trim(char *s)
