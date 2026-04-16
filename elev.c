@@ -97,7 +97,7 @@ secure_env(struct rule *match)
 
 	clearenv();
 
-	/* Default secure PATH */
+	
 	setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
 	if (saved_term)
 		setenv("TERM", saved_term, 1);
