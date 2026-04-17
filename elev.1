@@ -1,57 +1,80 @@
-.TH ELEV 1 "2026-04-15" "0.1" "elev Manual"
+.TH ELEV 1 "2026-04-17" "0.1" "elev Manual"
 .SH NAME
-elev \- minimalist sudo alternative
+elev \- execute a command as another user
 .SH SYNOPSIS
 .B elev
-[\fI-v\fR] [\fI-e\fR] [\fI-u user\fR] \fIcommand\fR [\fIargs...\fR]
+[\fB\-h\fR] [\fB\-v\fR] [\fB\-k\fR] [\fB\-u\fR \fIuser\fR] \fIcommand\fR [\fIargument\fR ...]
 .SH DESCRIPTION
 .B elev
-allows authorized users to execute commands as another user (defaulting to root) 
-based on rules defined in /etc/elev/conf.
+allows a permitted user to execute a
+.I command
+as another user, as specified by the configuration file
+.IR /etc/elev/conf .
+By default, the command is executed as the superuser (root).
+.PP
+The execution environment is strictly sanitized for security. All environment 
+variables are cleared except for \fBTERM\fR, which is preserved if it exists. 
+The \fBPATH\fR variable is reset to a safe default value:
+.IP
+/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+.PP
+Users may be required to authenticate themselves via PAM before the command is 
+executed, depending on the policy. Authentication can be cached using the 
+\fBpersist\fR option (see \fBelev\fR(5)).
+
 .SH OPTIONS
 .TP
-.BR \-u " \fIuser\fR"
-Run the command as the specified user.
+.BR \-h ", " \-\-help
+Display a short help message and exit.
 .TP
-.BR \-e ", " \-\-edit\-config
-Open /etc/elev/conf in the editor specified by $EDITOR or $VISUAL.
+.BR \-k ", " \-\-reset\-timestamp
+Invalidate the user's cached credentials (reset the persistence timestamp). 
+If no command is specified, \fBelev\fR will exit after resetting the timestamp. 
+This is equivalent to \fBsudo -k\fR.
+.TP
+.BR \-u " \fIuser\fR"
+Execute the command as the specified \fIuser\fR instead of \fBroot\fR.
+The \fIuser\fR can be a login name or a numeric user ID (UID).
 .TP
 .BR \-v ", " \-\-version
-Print version and exit.
-.TP
-.BR \-h ", " \-\-help
-Print help message and exit.
-.SH CONFIGURATION FILE
-The configuration file is located at \fB/etc/elev/conf\fR. It must be owned by root and not writable by others.
-Each line follows the format:
+Print version information and exit.
+
+.SH EXIT STATUS
+Upon successful execution, the exit status of \fBelev\fR will be the exit 
+status of the executed command.
+.PP
+If \fBelev\fR fails to execute the command due to an internal error, a 
+configuration mismatch, or an authentication failure, it exits with a 
+value of 1.
+
+.SH EXAMPLES
+To run an interactive shell as root:
 .IP
-\fBrule\fR [\fBoptions\fR] \fBuser\fR \fBas\fR \fBtarget\fR [\fBcmd\fR \fIcommand\fR [\fIargs\fR]]
+$ elev /bin/sh
 .PP
-\fBrulev\fR: \fBpermit\fR or \fBdeny\fR.
+To list the contents of a directory as the \fBwww-data\fR user:
+.IP
+$ elev -u www-data ls /var/www
 .PP
-\fBoptions\fR:
-.RS
-.TP
-\fBnopass\fR
-Do not prompt for a password.
-.TP
-\fBpersist\fR[=\fIduration\fR]
-Cache authentication for the specified duration (e.g., 5m, 1h).
-.TP
-\fBkeepenv\fR {\fIVARS\fR}
-Keep the specified environment variables.
-.RE
+To update the system (requires appropriate rules in \fBelev.conf\fR):
+.IP
+$ elev apt update
+
 .SH FILES
 .TP
-.B /etc/elev/conf
-Configuration file.
+.I /etc/elev/conf
+Policy configuration file.
 .TP
-.B /etc/pam.d/elev
-PAM configuration service.
+.I /etc/pam.d/elev
+PAM configuration file.
 .TP
-.B /run/elev/
-Directory for persistence timestamps.
+.I /run/elev/
+Directory used for authentication persistence timestamps.
+
+.SH SEE ALSO
+.BR elev (5),
+.BR pam (8)
+
 .SH AUTHORS
-pdlayer
-.SH LICENSE
-ISC
+.B elev
+was written by pdlayer.

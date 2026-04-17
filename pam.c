@@ -87,6 +87,15 @@ update_persist(const char *user)
 	close(fd);
 }
 
+void
+reset_persistence(const char *user)
+{
+	char path[PATH_MAX];
+	get_tty_path(user, path, sizeof(path));
+	if (unlink(path) == -1 && errno != ENOENT)
+		die("unlink: %s: %s", path, strerror(errno));
+}
+
 int
 authenticate_pam(const char *user, bool nopass, long persist)
 {

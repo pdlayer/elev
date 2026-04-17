@@ -1,0 +1,77 @@
+.TH ELEV 5 "2026-04-17" "0.1" "elev Configuration Manual"
+.SH NAME
+/etc/elev/conf \- configuration file for elev
+.SH DESCRIPTION
+The \fB/etc/elev/conf\fR file defines the security policies for the \fBelev\fR(1) utility. It determines which users are allowed to execute commands as other users and under what conditions.
+
+.SH SECURITY REQUIREMENTS
+To prevent unauthorized access, \fBelev\fR enforces strict security checks on the configuration file:
+.IP \(bu 3
+The file must be owned by \fBroot\fR.
+.IP \(bu 3
+The file must not be writable by group or others (recommended permissions: \fB0600\fR or \fB0644\fR).
+.IP \(bu 3
+The directory containing the file (\fB/etc/elev/\fR) must also be owned by \fBroot\fR and not writable by others.
+
+.SH SYNTAX
+The file consists of rules, one per line. Empty lines and lines starting with \fB#\fR or \fB//\fR are ignored.
+Rules are processed from top to bottom. The \fBlast\fR matching rule determines whether the action is permitted or denied.
+
+The general format of a rule is:
+.IP
+[\fBpermit\fR|\fBdeny\fR] [\fIoptions\fR] \fIuser\fR \fBas\fR \fItarget\fR [\fBcmd\fR \fIcommand\fR [\fIargs\fR]]
+.PP
+
+.SS Rule Types
+.TP
+\fBpermit\fR
+Allows the execution if all matchers in the rule are met.
+.TP
+\fBdeny\fR
+Explicitly forbids the execution.
+
+.SS Options
+Options modify the behavior of a \fBpermit\fR rule.
+.TP
+\fBnopass\fR
+Do not prompt the user for a password. Authentication is automatically considered successful.
+.TP
+\fBpersist\fR[\fB=\fR\fIduration\fR]
+Enable authentication caching. After a successful login, the user won't be prompted for a password for the specified \fIduration\fR.
+Units: \fBm\fR (minutes), \fBh\fR (hours), \fBd\fR (days). Example: \fBpersist=15m\fR.
+If no duration is specified, a default internal value is used.
+.TP
+\fBkeepenv {\fR\fIVARS\fR\fB}\fR
+Allows preserving specific environment variables from the user's session. \fIVARS\fR is a comma-separated list.
+Note: Certain dangerous variables (like \fBLD_PRELOAD\fR) are always stripped regardless of this setting.
+
+.SS Matchers
+.TP
+\fIuser\fR
+Specifies the user invoking \fBelev\fR. Can be a \fBusername\fR, a \fB:groupname\fR (prefixed with a colon), or \fB*\fR to match any user.
+.TP
+\fBas\fR \fItarget\fR
+Specifies the user as whom the command will be run. Use \fB*\fR to allow running as any user.
+.TP
+\fBcmd\fR \fIcommand\fR [\fIargs\fR]
+Restrict the rule to a specific absolute path of a command.
+If \fIargs\fR are provided, \fBelev\fR performs strict argument matching. You can specify multiple allowed values for an argument using commas (e.g., \fBcmd /bin/ls /tmp,/home\fR).
+.TP
+\fBdenycmd\fR \fIcommand\fR
+An alternative way to explicitly block a specific command path.
+
+.SH EXAMPLES
+.TP
+\fBpermit :wheel as root\fR
+Allow anyone in the \fBwheel\fR group to run any command as root.
+.TP
+\fBpermit persist=1h user1 as *\fR
+Allow \fBuser1\fR to run as any user, caching their password for 1 hour.
+.TP
+\fBpermit nopass user2 as root cmd /usr/bin/apt update\fR
+Allow \fBuser2\fR to run only \fBapt update\fR as root without a password.
+
+.SH FILES
+.I /etc/elev/conf
+.SH SEE ALSO
+.BR elev (1)

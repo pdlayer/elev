@@ -48,7 +48,7 @@ usage(void)
 	fprintf(stderr, " \\___  >____/\\___  >\\_/  \n");
 	fprintf(stderr, "     \\/          \\/      \n\n");
 	fprintf(stderr, "elev 0.1\n");
-	fprintf(stderr, "usage: elev [-v] [-u user] command [args...]\n");
+	fprintf(stderr, "usage: elev [-v] [-k] [-u user] command [args...]\n");
 	exit(1);
 }
 
@@ -144,18 +144,23 @@ main(int argc, char **argv)
 	struct rule *rules, *r, *match = NULL;
 	struct passwd *pw;
 	int ch;
+	bool reset_ts = false;
 
 	static struct option long_options[] = {
 		{"help", no_argument, 0, 'h'},
 		{"version", no_argument, 0, 'v'},
+		{"reset-timestamp", no_argument, 0, 'k'},
 		{0, 0, 0, 0}
 	};
 
 	openlog("elev", LOG_CONS | LOG_PID, LOG_AUTHPRIV);
 
 	ctx.target_user = "root";
-	while ((ch = getopt_long(argc, argv, "+u:vh", long_options, NULL)) != -1) {
+	while ((ch = getopt_long(argc, argv, "+u:vhk", long_options, NULL)) != -1) {
 		switch (ch) {
+		case 'k':
+			reset_ts = true;
+			break;
 		case 'u':
 			ctx.target_user = optarg;
 			break;
@@ -178,7 +183,7 @@ main(int argc, char **argv)
 
 	argc -= optind;
 	argv += optind;
-	if (argc < 1)
+	if (argc < 1 && !reset_ts)
 		usage();
 	ctx.cmd_argv = argv;
 	ctx.cmd_argc = argc;
@@ -189,6 +194,14 @@ main(int argc, char **argv)
 	if (!ctx.user)
 		die("malloc");
 	ctx.uid = pw->pw_uid;
+
+	if (reset_ts) {
+		reset_persistence(ctx.user);
+		if (argc < 1) {
+			free(ctx.user);
+			return 0;
+		}
+	}
 	
 	ctx.group_count = getgroups(0, NULL);
 	if (ctx.group_count == -1)

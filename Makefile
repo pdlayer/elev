@@ -9,7 +9,8 @@ BIN = $(BUILDDIR)/elev
 
 PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
-MANDIR = $(PREFIX)/share/man/man1
+MAN1DIR = $(PREFIX)/share/man/man1
+MAN5DIR = $(PREFIX)/share/man/man5
 BASHCOMPDIR = $(PREFIX)/share/bash-completion/completions
 ZSHCOMPDIR = $(PREFIX)/share/zsh/site-functions
 
@@ -24,13 +25,15 @@ $(BUILDDIR)/%.o: %.c
 
 install: $(BIN)
 	install -Dm4755 $(BIN) $(DESTDIR)$(BINDIR)/elev
-	install -Dm644 elev.1 $(DESTDIR)$(MANDIR)/elev.1
+	install -Dm644 elev.1 $(DESTDIR)$(MAN1DIR)/elev.1
+	install -Dm644 elev.5 $(DESTDIR)$(MAN5DIR)/elev.5
 	install -Dm644 elev.bash $(DESTDIR)$(BASHCOMPDIR)/elev
 	install -Dm644 elev.zsh $(DESTDIR)$(ZSHCOMPDIR)/_elev
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/elev
-	rm -f $(DESTDIR)$(MANDIR)/elev.1
+	rm -f $(DESTDIR)$(MAN1DIR)/elev.1
+	rm -f $(DESTDIR)$(MAN5DIR)/elev.5
 	rm -f $(DESTDIR)$(BASHCOMPDIR)/elev
 	rm -f $(DESTDIR)$(ZSHCOMPDIR)/_elev
 
