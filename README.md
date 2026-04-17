@@ -36,6 +36,10 @@ chown root:root /usr/local/bin/elev
 chmod 4755 /usr/local/bin/elev
 ```
 
+This also installs a default PAM service file to `/etc/pam.d/elev`.
+The bundled profile follows the system `system-auth` stack; on distributions
+without `system-auth`, adjust `/etc/pam.d/elev` to the local PAM layout.
+
 ## Configuration
 
 Rules in `/etc/elev/conf` (owned by root, `600`).
@@ -64,9 +68,10 @@ permit persist=5m user2 as *
 
 ## Notes
 
-- Requires `/etc/pam.d/elev`.
+- Ships a default `/etc/pam.d/elev`.
 - Whitelist-only environment.
 - Strict argument matching.
+- `persist` timestamps are accepted only from a root-owned secure runtime directory.
 
 ## License
 

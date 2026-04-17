@@ -13,6 +13,7 @@ MAN1DIR = $(PREFIX)/share/man/man1
 MAN5DIR = $(PREFIX)/share/man/man5
 BASHCOMPDIR = $(PREFIX)/share/bash-completion/completions
 ZSHCOMPDIR = $(PREFIX)/share/zsh/site-functions
+PAMDIR = /etc/pam.d
 
 all: $(BIN)
 
@@ -29,6 +30,7 @@ install: $(BIN)
 	install -Dm644 elev.5 $(DESTDIR)$(MAN5DIR)/elev.5
 	install -Dm644 elev.bash $(DESTDIR)$(BASHCOMPDIR)/elev
 	install -Dm644 elev.zsh $(DESTDIR)$(ZSHCOMPDIR)/_elev
+	install -Dm644 elev.pam $(DESTDIR)$(PAMDIR)/elev
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/elev
@@ -36,6 +38,7 @@ uninstall:
 	rm -f $(DESTDIR)$(MAN5DIR)/elev.5
 	rm -f $(DESTDIR)$(BASHCOMPDIR)/elev
 	rm -f $(DESTDIR)$(ZSHCOMPDIR)/_elev
+	rm -f $(DESTDIR)$(PAMDIR)/elev
 
 clean:
 	rm -rf $(BUILDDIR)

@@ -37,6 +37,25 @@ get_tty_path(const char *user, char *buf, size_t len)
 	}
 }
 
+static void
+validate_persist_dir(void)
+{
+	struct stat st;
+
+	if (lstat(ELEV_RUN, &st) != 0) {
+		if (errno == ENOENT)
+			return;
+		die("lstat: %s: %s", ELEV_RUN, strerror(errno));
+	}
+
+	if (!S_ISDIR(st.st_mode))
+		die("security: %s: not a directory", ELEV_RUN);
+	if (st.st_uid != 0)
+		die("security: %s: not owned by root", ELEV_RUN);
+	if (st.st_mode & (S_IWGRP | S_IWOTH))
+		die("security: %s: writable by group or others", ELEV_RUN);
+}
+
 static bool
 check_persist(const char *user, long limit)
 {
@@ -44,12 +63,14 @@ check_persist(const char *user, long limit)
 	time_t now = time(NULL);
 	char path[PATH_MAX];
 
+	validate_persist_dir();
 	get_tty_path(user, path, sizeof(path));
 
 	if (lstat(path, &st) != 0)
 		return false;
 
-	if (!S_ISREG(st.st_mode)) {
+	if (!S_ISREG(st.st_mode) || st.st_uid != 0 ||
+	    (st.st_mode & (S_IRWXG | S_IRWXO))) {
 		unlink(path);
 		return false;
 	}
@@ -72,11 +93,18 @@ update_persist(const char *user)
 	struct stat st;
 	int fd;
 
+	validate_persist_dir();
 	if (mkdir(ELEV_RUN, 0700) == -1) {
 		if (errno != EEXIST)
 			die("mkdir: %s: %s", ELEV_RUN, strerror(errno));
-		if (stat(ELEV_RUN, &st) == 0 && st.st_uid != 0)
+		if (lstat(ELEV_RUN, &st) != 0)
+			die("lstat: %s: %s", ELEV_RUN, strerror(errno));
+		if (!S_ISDIR(st.st_mode))
+			die("security: %s: not a directory", ELEV_RUN);
+		if (st.st_uid != 0)
 			die("security: %s: not owned by root", ELEV_RUN);
+		if (st.st_mode & (S_IWGRP | S_IWOTH))
+			die("security: %s: writable by group or others", ELEV_RUN);
 	}
 	get_tty_path(user, path, sizeof(path));
 
@@ -91,6 +119,8 @@ void
 reset_persistence(const char *user)
 {
 	char path[PATH_MAX];
+
+	validate_persist_dir();
 	get_tty_path(user, path, sizeof(path));
 	if (unlink(path) == -1 && errno != ENOENT)
 		die("unlink: %s: %s", path, strerror(errno));
