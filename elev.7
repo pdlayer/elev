@@ -1,0 +1,59 @@
+.TH ELEV 7 "2026-04-20" "1.0.0" "elev Security Notes"
+.SH NAME
+elev \- security model and operational notes
+.SH DESCRIPTION
+\fBelev\fR(1) is a small setuid command runner backed by PAM and a compact policy
+language. It is intended to answer the "run this command as another user under a
+simple local policy" problem.
+.PP
+It is not a containment system. If you need process isolation, filesystem view
+restrictions, namespaces, seccomp, or broader application sandboxing, use tools
+built for that job such as \fBbwrap\fR(1).
+.SH SECURITY MODEL
+.IP \(bu 3
+Policy is read from a root-owned configuration file and rejected if the path or
+opened file is insecure.
+.IP \(bu 3
+Authentication is delegated to PAM.
+.IP \(bu 3
+The parent process keeps PAM credentials and the PAM session alive while the
+command runs, then closes both after the command exits.
+.IP \(bu 3
+The child process drops privileges, sanitizes the environment, and executes the
+target command.
+.IP \(bu 3
+Authentication persistence is limited to real TTY sessions and stored in a
+root-owned runtime directory.
+.SH NON-GOALS
+.IP \(bu 3
+\fBelev\fR does not try to sandbox the program you allowed.
+.IP \(bu 3
+\fBelev\fR does not make shells, interpreters, editors, pagers, package managers,
+or other complex programs "safe" once you permit them.
+.IP \(bu 3
+\fBdenycmd\fR is not meant to stop deliberate shell tricks or alternate execution
+paths. It is a convenience guardrail for policy authors.
+.SH POLICY GUIDANCE
+.IP \(bu 3
+Prefer exact command paths in \fBcmd\fR rules.
+.IP \(bu 3
+Prefer small allowlists over broad user or group grants.
+.IP \(bu 3
+Treat \fBnopass\fR as a strong trust decision.
+.IP \(bu 3
+Use \fBkeepenv\fR sparingly and only for variables the target program truly needs.
+.IP \(bu 3
+Do not grant shells or interpreters unless you intend to grant their full power.
+.SH OPERATIONS
+.IP \(bu 3
+Install the binary setuid root and keep the configuration tree owned by root and
+unwritable by group or others.
+.IP \(bu 3
+Review PAM policy in \fI/etc/pam.d/elev\fR for the local distribution.
+.IP \(bu 3
+Use \fBelev -k\fR to invalidate cached authentication for the current user and TTY.
+.SH SEE ALSO
+.BR elev (1),
+.BR elev (5),
+.BR bwrap (1),
+.BR pam (8)

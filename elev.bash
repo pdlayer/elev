@@ -17,7 +17,7 @@ _elev() {
     esac
 
     if [[ "$cur" == -* ]]; then
-        COMPREPLY=( $(compgen -W "-u -v -h -e --version --help --edit-config" -- "$cur") )
+        COMPREPLY=( $(compgen -W "-u -v -h -k --version --help --reset-timestamp" -- "$cur") )
         return 0
     fi
 

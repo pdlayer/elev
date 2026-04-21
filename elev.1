@@ -1,4 +1,4 @@
-.TH ELEV 1 "2026-04-17" "0.1" "elev Manual"
+.TH ELEV 1 "2026-04-20" "1.0.0" "elev Manual"
 .SH NAME
 elev \- execute a command as another user
 .SH SYNOPSIS
@@ -21,6 +21,11 @@ The \fBPATH\fR variable is reset to a safe default value:
 Users may be required to authenticate themselves via PAM before the command is 
 executed, depending on the policy. Authentication can be cached using the 
 \fBpersist\fR option (see \fBelev\fR(5)).
+Persistence is only reused for invocations attached to a real TTY; non-TTY
+invocations always require fresh authentication.
+.PP
+The parent process keeps the PAM session open while the target command runs and
+closes it after the command exits.
 
 .SH OPTIONS
 .TP
@@ -54,11 +59,11 @@ $ elev /bin/sh
 .PP
 To list the contents of a directory as the \fBwww-data\fR user:
 .IP
-$ elev -u www-data ls /var/www
+$ elev -u www-data /usr/bin/ls /var/www
 .PP
 To update the system (requires appropriate rules in \fBelev.conf\fR):
 .IP
-$ elev apt update
+$ elev /usr/bin/apt update
 
 .SH FILES
 .TP
@@ -77,6 +82,7 @@ Directory used for authentication persistence timestamps.
 
 .SH SEE ALSO
 .BR elev (5),
+.BR elev (7),
 .BR pam (8)
 
 .SH AUTHORS

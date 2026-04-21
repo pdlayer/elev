@@ -19,7 +19,7 @@
         {
           default = pkgs.stdenv.mkDerivation {
             pname = "elev";
-            version = "0.1";
+            version = "1.0.0";
 
             src = ./.;
 
@@ -27,7 +27,7 @@
             buildInputs = [ pkgs.pam ];
 
             installPhase = ''
-              mkdir -p $out/bin $out/share/man/man1 $out/share/man/man5 $out/share/bash-completion/completions $out/share/zsh/site-functions
+              mkdir -p $out/bin $out/share/man/man1 $out/share/man/man5 $out/share/man/man7 $out/share/bash-completion/completions $out/share/zsh/site-functions
               make install DESTDIR=$out PREFIX=
             '';
           };

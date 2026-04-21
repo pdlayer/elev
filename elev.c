@@ -8,22 +8,49 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/types.h>
 #include <syslog.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "elev.h"
 
-extern char **environ;
-
 static const char *forbidden_env[] = {
-	"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
-	"PYTHONPATH", "PYTHONHOME", "PERL5LIB", "PERL5OPT",
-	"RUBYLIB", "RUBYOPT", "GEM_HOME", "GEM_PATH",
+	"BASH_ENV", "CHARSET", "ENV", "GCONV_PATH",
+	"GEM_HOME", "GEM_PATH",
+	"GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
+	"HOSTALIASES", "IFS", "INPUTRC",
+	"JAVA_TOOL_OPTIONS",
+	"LD_AUDIT", "LD_DEBUG", "LD_LIBRARY_PATH", "LD_PRELOAD",
+	"LESSOPEN", "LOCALDOMAIN", "LUA_CPATH", "LUA_PATH",
+	"NLSPATH", "NODE_OPTIONS",
+	"PERL5LIB", "PERL5OPT", "PERLLIB",
+	"PYTHONHOME", "PYTHONINSPECT", "PYTHONPATH",
+	"PYTHONSTARTUP", "PYTHONUSERBASE",
+	"RES_OPTIONS", "RUBYLIB", "RUBYOPT",
+	"TERMINFO", "TERMINFO_DIRS", "TMPDIR",
 	"XDG_CONFIG_DIRS", "XDG_DATA_DIRS",
 	NULL
 };
+
+static const char *forbidden_env_prefixes[] = {
+	"BASH_FUNC_",
+	"LD_",
+	NULL
+};
+
+static void
+child_die(const char *fmt, ...)
+{
+	va_list ap;
+
+	dprintf(STDERR_FILENO, "elev: ");
+	va_start(ap, fmt);
+	vdprintf(STDERR_FILENO, fmt, ap);
+	va_end(ap);
+	dprintf(STDERR_FILENO, "\n");
+	_exit(1);
+}
 
 void
 die(const char *fmt, ...)
@@ -47,7 +74,7 @@ usage(void)
 	fprintf(stderr, "\\  ___/|  |_\\  ___/\\   / \n");
 	fprintf(stderr, " \\___  >____/\\___  >\\_/  \n");
 	fprintf(stderr, "     \\/          \\/      \n\n");
-	fprintf(stderr, "elev 0.1\n");
+	fprintf(stderr, "elev 1.0.0\n");
 	fprintf(stderr, "usage: elev [-v] [-k] [-u user] command [args...]\n");
 	exit(1);
 }
@@ -61,15 +88,63 @@ is_forbidden(const char *var)
 		if (strcmp(var, forbidden_env[i]) == 0)
 			return true;
 	}
+	for (i = 0; forbidden_env_prefixes[i]; i++) {
+		if (strncmp(var, forbidden_env_prefixes[i],
+		    strlen(forbidden_env_prefixes[i])) == 0)
+			return true;
+	}
 	return false;
 }
 
 static void
-secure_env(struct rule *match)
+free_keep_vals(char *keep_vals[], int count)
 {
-	char *keep_vals[MAX_ENV_KEEP];
-	char *term, *saved_term;
 	int i;
+
+	for (i = 0; i < count; i++)
+		free(keep_vals[i]);
+}
+
+static bool
+safe_setenv(const char *name, const char *value)
+{
+	return setenv(name, value, 1) == 0;
+}
+
+static bool
+apply_env_entry(const char *entry)
+{
+	const char *sep;
+	size_t name_len;
+	char name[256];
+
+	sep = strchr(entry, '=');
+	if (!sep)
+		return true;
+
+	name_len = (size_t)(sep - entry);
+	if (name_len == 0 || name_len >= sizeof(name))
+		return true;
+
+	memcpy(name, entry, name_len);
+	name[name_len] = '\0';
+
+	if (!valid_env_name(name) || is_forbidden(name))
+		return true;
+	if (strcmp(name, "PATH") == 0)
+		return true;
+
+	return safe_setenv(name, sep + 1);
+}
+
+static bool
+secure_env(struct rule *match, char **pam_env)
+{
+	char *keep_vals[MAX_ENV_KEEP] = {0};
+	char *term, *saved_term = NULL;
+	int saved_errno = 0;
+	int i;
+	bool ok = false;
 
 	for (i = 0; i < match->keepenv_count; i++) {
 		if (is_forbidden(match->keepenv[i])) {
@@ -79,8 +154,10 @@ secure_env(struct rule *match)
 		char *v = getenv(match->keepenv[i]);
 		if (v) {
 			keep_vals[i] = strdup(v);
-			if (!keep_vals[i])
-				die("malloc");
+			if (!keep_vals[i]) {
+				saved_errno = ENOMEM;
+				goto out;
+			}
 		} else {
 			keep_vals[i] = NULL;
 		}
@@ -89,52 +166,69 @@ secure_env(struct rule *match)
 	term = getenv("TERM");
 	if (term) {
 		saved_term = strdup(term);
-		if (!saved_term)
-			die("malloc");
+		if (!saved_term) {
+			saved_errno = ENOMEM;
+			goto out;
+		}
 	} else {
 		saved_term = NULL;
 	}
 
-	clearenv();
+	if (clearenv() != 0) {
+		saved_errno = errno;
+		goto out;
+	}
 
-	
-	setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
-	if (saved_term)
-		setenv("TERM", saved_term, 1);
+	if (!safe_setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")) {
+		saved_errno = errno;
+		goto out;
+	}
+	if (saved_term && !safe_setenv("TERM", saved_term)) {
+		saved_errno = errno;
+		goto out;
+	}
 
 	for (i = 0; i < match->keepenv_count; i++) {
-		if (keep_vals[i]) {
-			setenv(match->keepenv[i], keep_vals[i], 1);
-			free(keep_vals[i]);
+		if (keep_vals[i] && !safe_setenv(match->keepenv[i], keep_vals[i])) {
+			saved_errno = errno;
+			goto out;
 		}
 	}
+
+	if (pam_env) {
+		for (i = 0; pam_env[i]; i++) {
+			if (!apply_env_entry(pam_env[i])) {
+				saved_errno = errno;
+				goto out;
+			}
+		}
+	}
+
+	ok = true;
+
+	out:
+	free_keep_vals(keep_vals, MAX_ENV_KEEP);
 	free(saved_term);
+	free_env_list(pam_env);
+	if (!ok && saved_errno != 0)
+		errno = saved_errno;
+	return ok;
 }
 
-static void
-check_config_security(const char *path)
+static int
+wait_for_child(pid_t pid)
 {
-	struct stat st;
-	char dir[1024];
-	char *p;
+	int status;
 
-	if (stat(path, &st) != 0)
-		die("stat: %s: %s", path, strerror(errno));
-	if (st.st_uid != 0 || (st.st_mode & (S_IWGRP | S_IWOTH)))
-		die("config: insecure ownership or permissions");
-
-	strncpy(dir, path, sizeof(dir) - 1);
-	dir[sizeof(dir) - 1] = '\0';
-	if ((p = strrchr(dir, '/'))) {
-		if (p == dir)
-			p[1] = '\0';
-		else
-			*p = '\0';
-		if (stat(dir, &st) == 0) {
-			if (st.st_uid != 0 || (st.st_mode & (S_IWGRP | S_IWOTH)))
-				die("config directory: insecure ownership or permissions");
-		}
+	while (waitpid(pid, &status, 0) == -1) {
+		if (errno != EINTR)
+			die("waitpid: %s", strerror(errno));
 	}
+	if (WIFEXITED(status))
+		return WEXITSTATUS(status);
+	if (WIFSIGNALED(status))
+		return 128 + WTERMSIG(status);
+	return 1;
 }
 
 int
@@ -143,8 +237,14 @@ main(int argc, char **argv)
 	struct context ctx = {0};
 	struct rule *rules, *r, *match = NULL;
 	struct passwd *pw;
+	pid_t pid;
+	pam_handle_t *pamh = NULL;
+	char **pam_env = NULL;
 	int ch;
+	int status;
 	bool reset_ts = false;
+	bool pam_session_open = false;
+	bool pam_creds_established = false;
 
 	static struct option long_options[] = {
 		{"help", no_argument, 0, 'h'},
@@ -171,7 +271,7 @@ main(int argc, char **argv)
 			printf("\\  ___/|  |_\\  ___/\\   / \n");
 			printf(" \\___  >____/\\___  >\\_/  \n");
 			printf("     \\/          \\/      \n\n");
-			printf("elev 0.1\n");
+			printf("elev 1.0.0\n");
 			exit(0);
 		case 'h':
 			usage();
@@ -206,18 +306,19 @@ main(int argc, char **argv)
 	ctx.group_count = getgroups(0, NULL);
 	if (ctx.group_count == -1)
 		die("getgroups");
-	ctx.groups = calloc(ctx.group_count, sizeof(gid_t));
-	if (!ctx.groups)
-		die("malloc");
-	if (getgroups(ctx.group_count, ctx.groups) == -1)
-		die("getgroups");
+	if (ctx.group_count > 0) {
+		ctx.groups = calloc(ctx.group_count, sizeof(gid_t));
+		if (!ctx.groups)
+			die("malloc");
+		if (getgroups(ctx.group_count, ctx.groups) == -1)
+			die("getgroups");
+	}
 
 	if (!(pw = getpwnam(ctx.target_user)))
 		die("unknown user: %s", ctx.target_user);
 	ctx.target_uid = pw->pw_uid;
 	ctx.target_gid = pw->pw_gid;
 
-	check_config_security(ELEV_CONF);
 	rules = parse_config(ELEV_CONF);
 	if (!rules)
 		die("config: parse error");
@@ -232,26 +333,45 @@ main(int argc, char **argv)
 		die("access denied");
 	}
 
-	if (authenticate_pam(ctx.user, match->nopass, match->persist) != 0) {
+	if (authenticate_pam(ctx.user, match->nopass, match->persist,
+	    &pamh, &pam_session_open, &pam_creds_established) != 0) {
 		syslog(LOG_WARNING, "auth failed: %s as %s", ctx.user, ctx.target_user);
 		die("auth failed");
 	}
+	pam_env = pamh ? pam_getenvlist(pamh) : NULL;
 
-	if (initgroups(ctx.target_user, ctx.target_gid) != 0)
-		die("initgroups");
-	if (setgid(ctx.target_gid) != 0)
-		die("setgid");
-	if (setuid(ctx.target_uid) != 0)
-		die("setuid");
+	pid = fork();
+	if (pid == -1) {
+		free_env_list(pam_env);
+		cleanup_pam(pamh, pam_session_open, pam_creds_established, PAM_ABORT);
+		die("fork: %s", strerror(errno));
+	}
+	if (pid == 0) {
+		if (setgid(ctx.target_gid) != 0)
+			child_die("setgid");
+		if (initgroups(ctx.target_user, ctx.target_gid) != 0)
+			child_die("initgroups");
+		if (setuid(ctx.target_uid) != 0)
+			child_die("setuid");
 
-	syslog(LOG_INFO, "success: %s as %s: %s", ctx.user, ctx.target_user, ctx.cmd_argv[0]);
-	secure_env(match);
+		syslog(LOG_INFO, "success: %s as %s: %s", ctx.user, ctx.target_user, ctx.cmd_argv[0]);
+		if (!secure_env(match, pam_env))
+			child_die("secure_env: %s", strerror(errno));
+
+		free(ctx.user);
+		free(ctx.groups);
+		free_rules(rules);
+
+		execvp(ctx.cmd_argv[0], ctx.cmd_argv);
+		child_die("execvp: %s: %s", ctx.cmd_argv[0], strerror(errno));
+	}
 
 	free(ctx.user);
 	free(ctx.groups);
 	free_rules(rules);
-
-	execvp(ctx.cmd_argv[0], ctx.cmd_argv);
-	die("execvp: %s: %s", ctx.cmd_argv[0], strerror(errno));
-	return 0;
+	free_env_list(pam_env);
+	status = wait_for_child(pid);
+	cleanup_pam(pamh, pam_session_open, pam_creds_established,
+	    status == 0 ? PAM_SUCCESS : PAM_ABORT);
+	return status;
 }

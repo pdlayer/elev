@@ -19,22 +19,29 @@ static struct pam_conv conv = {
 	NULL
 };
 
-static void
+static bool
 get_tty_path(const char *user, char *buf, size_t len)
 {
 	char *tty = ttyname(STDIN_FILENO);
 	char *p;
 
-	if (tty) {
-		if (strncmp(tty, "/dev/", 5) == 0)
-			tty += 5;
-		snprintf(buf, len, "%s/%s_%s", ELEV_RUN, user, tty);
-		for (p = buf + strlen(ELEV_RUN) + 1; *p; p++)
-			if (*p == '/')
-				*p = '_';
-	} else {
-		snprintf(buf, len, "%s/%s_notty", ELEV_RUN, user);
-	}
+	if (!tty)
+		return false;
+
+	if (strncmp(tty, "/dev/", 5) == 0)
+		tty += 5;
+	snprintf(buf, len, "%s/%s_%s", ELEV_RUN, user, tty);
+	for (p = buf + strlen(ELEV_RUN) + 1; *p; p++)
+		if (*p == '/')
+			*p = '_';
+
+	return true;
+}
+
+static void
+get_legacy_notty_path(const char *user, char *buf, size_t len)
+{
+	snprintf(buf, len, "%s/%s_notty", ELEV_RUN, user);
 }
 
 static void
@@ -64,7 +71,8 @@ check_persist(const char *user, long limit)
 	char path[PATH_MAX];
 
 	validate_persist_dir();
-	get_tty_path(user, path, sizeof(path));
+	if (!get_tty_path(user, path, sizeof(path)))
+		return false;
 
 	if (lstat(path, &st) != 0)
 		return false;
@@ -77,6 +85,14 @@ check_persist(const char *user, long limit)
 
 	if (limit == -1)
 		return true;
+	if (limit < 0)
+		return false;
+	if (now == (time_t)-1)
+		return false;
+	if (st.st_mtime > now) {
+		unlink(path);
+		return false;
+	}
 
 	if (now - st.st_mtime > limit) {
 		unlink(path);
@@ -106,7 +122,8 @@ update_persist(const char *user)
 		if (st.st_mode & (S_IWGRP | S_IWOTH))
 			die("security: %s: writable by group or others", ELEV_RUN);
 	}
-	get_tty_path(user, path, sizeof(path));
+	if (!get_tty_path(user, path, sizeof(path)))
+		return;
 
 	unlink(path);
 	fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
@@ -121,16 +138,27 @@ reset_persistence(const char *user)
 	char path[PATH_MAX];
 
 	validate_persist_dir();
-	get_tty_path(user, path, sizeof(path));
+	if (get_tty_path(user, path, sizeof(path)) &&
+	    unlink(path) == -1 && errno != ENOENT)
+		die("unlink: %s: %s", path, strerror(errno));
+
+	get_legacy_notty_path(user, path, sizeof(path));
 	if (unlink(path) == -1 && errno != ENOENT)
 		die("unlink: %s: %s", path, strerror(errno));
 }
 
 int
-authenticate_pam(const char *user, bool nopass, long persist)
+authenticate_pam(const char *user, bool nopass, long persist,
+	pam_handle_t **pamh_out, bool *session_open, bool *creds_established)
 {
 	pam_handle_t *pamh = NULL;
 	int retval;
+	bool opened = false;
+	bool creds = false;
+
+	*pamh_out = NULL;
+	*session_open = false;
+	*creds_established = false;
 
 	if (nopass)
 		return 0;
@@ -154,10 +182,41 @@ authenticate_pam(const char *user, bool nopass, long persist)
 		return -1;
 	}
 
-	pam_end(pamh, PAM_SUCCESS);
+	retval = pam_setcred(pamh, PAM_ESTABLISH_CRED);
+	if (retval != PAM_SUCCESS) {
+		pam_end(pamh, retval);
+		return -1;
+	}
+	creds = true;
+
+	retval = pam_open_session(pamh, 0);
+	if (retval != PAM_SUCCESS) {
+		pam_setcred(pamh, PAM_DELETE_CRED);
+		pam_end(pamh, retval);
+		return -1;
+	}
+	opened = true;
 
 	if (persist != 0)
 		update_persist(user);
 
+	*pamh_out = pamh;
+	*session_open = opened;
+	*creds_established = creds;
+
 	return 0;
+}
+
+void
+cleanup_pam(pam_handle_t *pamh, bool session_open,
+	bool creds_established, int pam_status)
+{
+	if (!pamh)
+		return;
+
+	if (session_open)
+		pam_close_session(pamh, 0);
+	if (creds_established)
+		pam_setcred(pamh, PAM_DELETE_CRED);
+	pam_end(pamh, pam_status);
 }
