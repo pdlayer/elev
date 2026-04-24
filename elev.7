@@ -22,8 +22,9 @@ command runs, then closes both after the command exits.
 The child process drops privileges, sanitizes the environment, and executes the
 target command.
 .IP \(bu 3
-Authentication persistence is limited to real TTY sessions and stored in a
-root-owned runtime directory.
+Authentication persistence is limited to real TTY sessions, stored in a
+root-owned runtime directory, and scoped to the target user, matched rule, and
+command line.
 .SH NON-GOALS
 .IP \(bu 3
 \fBelev\fR does not try to sandbox the program you allowed.

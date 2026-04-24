@@ -1,6 +1,7 @@
 #include <security/pam_appl.h>
 #include <security/pam_misc.h>
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -20,17 +21,23 @@ static struct pam_conv conv = {
 };
 
 static bool
-get_tty_path(const char *user, char *buf, size_t len)
+get_tty_path(const char *user, const char *scope, char *buf, size_t len)
 {
 	char *tty = ttyname(STDIN_FILENO);
 	char *p;
+	int n;
 
 	if (!tty)
 		return false;
 
 	if (strncmp(tty, "/dev/", 5) == 0)
 		tty += 5;
-	snprintf(buf, len, "%s/%s_%s", ELEV_RUN, user, tty);
+	if (scope && scope[0])
+		n = snprintf(buf, len, "%s/%s_%s_%s", ELEV_RUN, user, tty, scope);
+	else
+		n = snprintf(buf, len, "%s/%s_%s", ELEV_RUN, user, tty);
+	if (n < 0 || (size_t)n >= len)
+		return false;
 	for (p = buf + strlen(ELEV_RUN) + 1; *p; p++)
 		if (*p == '/')
 			*p = '_';
@@ -64,24 +71,22 @@ validate_persist_dir(void)
 }
 
 static bool
-check_persist(const char *user, long limit)
+check_persist(const char *user, const char *scope, long limit)
 {
 	struct stat st;
 	time_t now = time(NULL);
 	char path[PATH_MAX];
 
 	validate_persist_dir();
-	if (!get_tty_path(user, path, sizeof(path)))
+	if (!get_tty_path(user, scope, path, sizeof(path)))
 		return false;
 
 	if (lstat(path, &st) != 0)
 		return false;
 
 	if (!S_ISREG(st.st_mode) || st.st_uid != 0 ||
-	    (st.st_mode & (S_IRWXG | S_IRWXO))) {
-		unlink(path);
+	    (st.st_mode & (S_IRWXG | S_IRWXO)))
 		return false;
-	}
 
 	if (limit == -1)
 		return true;
@@ -89,21 +94,17 @@ check_persist(const char *user, long limit)
 		return false;
 	if (now == (time_t)-1)
 		return false;
-	if (st.st_mtime > now) {
-		unlink(path);
+	if (st.st_mtime > now)
 		return false;
-	}
 
-	if (now - st.st_mtime > limit) {
-		unlink(path);
+	if (now - st.st_mtime > limit)
 		return false;
-	}
 
 	return true;
 }
 
 static void
-update_persist(const char *user)
+update_persist(const char *user, const char *scope)
 {
 	char path[PATH_MAX];
 	struct stat st;
@@ -122,13 +123,29 @@ update_persist(const char *user)
 		if (st.st_mode & (S_IWGRP | S_IWOTH))
 			die("security: %s: writable by group or others", ELEV_RUN);
 	}
-	if (!get_tty_path(user, path, sizeof(path)))
+	if (!get_tty_path(user, scope, path, sizeof(path)))
 		return;
 
-	unlink(path);
-	fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
 	if (fd == -1)
 		die("open: %s: %s", path, strerror(errno));
+	if (fstat(fd, &st) != 0) {
+		close(fd);
+		die("fstat: %s: %s", path, strerror(errno));
+	}
+	if (!S_ISREG(st.st_mode) || st.st_uid != 0 ||
+	    (st.st_mode & (S_IRWXG | S_IRWXO))) {
+		close(fd);
+		die("security: insecure persistence file: %s", path);
+	}
+	if (write(fd, "1", 1) != 1) {
+		close(fd);
+		die("write: %s: %s", path, strerror(errno));
+	}
+	if (ftruncate(fd, 0) != 0) {
+		close(fd);
+		die("ftruncate: %s: %s", path, strerror(errno));
+	}
 	close(fd);
 }
 
@@ -136,9 +153,42 @@ void
 reset_persistence(const char *user)
 {
 	char path[PATH_MAX];
+	char prefix[PATH_MAX];
+	char *prefix_name;
+	DIR *dir;
+	struct dirent *ent;
+	size_t prefix_len;
+	size_t prefix_name_len;
 
 	validate_persist_dir();
-	if (get_tty_path(user, path, sizeof(path)) &&
+	if (get_tty_path(user, NULL, prefix, sizeof(prefix))) {
+		prefix_len = strlen(prefix);
+		if (prefix_len + 1 >= sizeof(prefix))
+			goto legacy;
+		prefix[prefix_len++] = '_';
+		prefix[prefix_len] = '\0';
+		prefix_name = prefix + strlen(ELEV_RUN) + 1;
+		prefix_name_len = strlen(prefix_name);
+
+		dir = opendir(ELEV_RUN);
+		if (dir) {
+			while ((ent = readdir(dir)) != NULL) {
+				if (strncmp(ent->d_name, prefix_name, prefix_name_len) != 0)
+					continue;
+				snprintf(path, sizeof(path), "%s/%s", ELEV_RUN, ent->d_name);
+				if (unlink(path) == -1 && errno != ENOENT) {
+					closedir(dir);
+					die("unlink: %s: %s", path, strerror(errno));
+				}
+			}
+			closedir(dir);
+		} else if (errno != ENOENT) {
+			die("opendir: %s: %s", ELEV_RUN, strerror(errno));
+		}
+	}
+
+legacy:
+	if (get_tty_path(user, NULL, path, sizeof(path)) &&
 	    unlink(path) == -1 && errno != ENOENT)
 		die("unlink: %s: %s", path, strerror(errno));
 
@@ -148,7 +198,8 @@ reset_persistence(const char *user)
 }
 
 int
-authenticate_pam(const char *user, bool nopass, long persist,
+authenticate_pam(const char *user, const char *cache_scope,
+	bool nopass, long persist,
 	pam_handle_t **pamh_out, bool *session_open, bool *creds_established)
 {
 	pam_handle_t *pamh = NULL;
@@ -163,7 +214,7 @@ authenticate_pam(const char *user, bool nopass, long persist,
 	if (nopass)
 		return 0;
 
-	if (persist != 0 && check_persist(user, persist))
+	if (persist != 0 && check_persist(user, cache_scope, persist))
 		return 0;
 
 	retval = pam_start("elev", user, &conv, &pamh);
@@ -198,7 +249,7 @@ authenticate_pam(const char *user, bool nopass, long persist,
 	opened = true;
 
 	if (persist != 0)
-		update_persist(user);
+		update_persist(user, cache_scope);
 
 	*pamh_out = pamh;
 	*session_open = opened;

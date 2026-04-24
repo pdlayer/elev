@@ -41,6 +41,9 @@ struct context {
 	char *target_user;
 	uid_t target_uid;
 	gid_t target_gid;
+	char *target_name;
+	char *target_home;
+	char *target_shell;
 	char **cmd_argv;
 	int cmd_argc;
 };
@@ -51,12 +54,13 @@ void free_rules(struct rule *rules);
 bool valid_env_name(const char *name);
 void free_env_list(char **env);
 
-int authenticate_pam(const char *user, bool nopass, long persist,
+int authenticate_pam(const char *user, const char *cache_scope,
+	bool nopass, long persist,
 	pam_handle_t **pamh, bool *session_open, bool *creds_established);
 void cleanup_pam(pam_handle_t *pamh, bool session_open,
 	bool creds_established, int pam_status);
 void reset_persistence(const char *user);
-void die(const char *fmt, ...);
+void die(const char *fmt, ...) __attribute__((noreturn));
 
 
 #endif

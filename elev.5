@@ -44,6 +44,9 @@ Units: \fBm\fR (minutes), \fBh\fR (hours), \fBd\fR (days). Example: \fBpersist=1
 If no duration is specified, a default internal value is used.
 Cached credentials are only trusted when the timestamp file lives in a
 root-owned runtime directory that is not writable by group or others.
+Each timestamp is scoped to the invoking user, TTY, target user, matched rule,
+and command line, so one cached authentication does not unlock unrelated
+\fBpersist\fR rules.
 For non-TTY invocations, persistence is disabled entirely to avoid sharing a
 single cache across unrelated background sessions.
 .TP

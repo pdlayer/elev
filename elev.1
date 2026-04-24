@@ -23,6 +23,8 @@ executed, depending on the policy. Authentication can be cached using the
 \fBpersist\fR option (see \fBelev\fR(5)).
 Persistence is only reused for invocations attached to a real TTY; non-TTY
 invocations always require fresh authentication.
+Cached authentication is scoped to the target user, matched rule, and command
+line.
 .PP
 The parent process keeps the PAM session open while the target command runs and
 closes it after the command exits.
