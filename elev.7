@@ -50,7 +50,8 @@ Do not grant shells or interpreters unless you intend to grant their full power.
 Install the binary setuid root and keep the configuration tree owned by root and
 unwritable by group or others.
 .IP \(bu 3
-Review PAM policy in \fI/etc/pam.d/elev\fR for the local distribution.
+Review PAM policy in \fI/etc/pam.d/elev\fR for the local platform. Linux,
+FreeBSD, NetBSD, OpenBSD, and macOS may require different PAM stack entries.
 .IP \(bu 3
 Use \fBelev -k\fR to invalidate cached authentication for the current user and TTY.
 .SH SEE ALSO

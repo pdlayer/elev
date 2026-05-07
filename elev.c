@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -19,35 +17,39 @@
 #include "elev.h"
 
 static const char *forbidden_env[] = {
-	"BASH_ENV", "CHARSET", "ENV", "GCONV_PATH",
-	"GEM_HOME", "GEM_PATH",
-	"GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM",
-	"HOME", "HOSTALIASES", "IFS", "INPUTRC",
-	"JAVA_TOOL_OPTIONS",
-	"LD_AUDIT", "LD_DEBUG", "LD_LIBRARY_PATH", "LD_PRELOAD",
-	"LESSOPEN", "LOCALDOMAIN", "LUA_CPATH", "LUA_PATH",
-	"LOGNAME", "NLSPATH", "NODE_OPTIONS",
-	"PERL5LIB", "PERL5OPT", "PERLLIB",
-	"PYTHONHOME", "PYTHONINSPECT", "PYTHONPATH",
-	"PYTHONSTARTUP", "PYTHONUSERBASE",
-	"RES_OPTIONS", "RUBYLIB", "RUBYOPT",
-	"SHELL", "TERMINFO", "TERMINFO_DIRS", "TMPDIR",
-	"USER",
-	"XDG_CONFIG_DIRS", "XDG_DATA_DIRS",
-	NULL
+	"ARGV0", "BASHOPTS", "BASH_ENV", "CDPATH", "CHARSET", "DYLD_FALLBACK_LIBRARY_PATH",
+	"DYLD_FALLBACK_FRAMEWORK_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_INSERT_LIBRARIES",
+	"DYLD_LIBRARY_PATH", "ENV", "FPATH", "GCC_EXEC_PREFIX", "GCONV_PATH", "GEM_HOME",
+	"GEM_PATH", "GETCONF_DIR", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL",
+	"GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_SYSTEM", "GIT_EXEC_PATH",
+	"GLIBC_TUNABLES", "HOME", "HOSTALIASES", "IFS", "INPUTRC", "INSIDE_EMACS",
+	"JAVA_TOOL_OPTIONS", "LESSCLOSE", "LESSOPEN", "LOCALDOMAIN", "LOGNAME", "LPATH",
+	"LUA_CPATH", "LUA_INIT", "LUA_INIT_5_1", "LUA_INIT_5_2", "LUA_INIT_5_3", "LUA_INIT_5_4",
+	"LUA_PATH", "MALLOC_ARENA_MAX", "MALLOC_CHECK_", "MALLOC_CONF", "MALLOC_TRACE", "NLSPATH",
+	"NODE_OPTIONS", "PERL5DB", "PERL5LIB", "PERL5OPT", "PERLIO_DEBUG", "PERLLIB",
+	"PYTHONBREAKPOINT", "PYTHONDONTWRITEBYTECODE", "PYTHONHOME", "PYTHONINSPECT",
+	"PYTHONPATH", "PYTHONPROFILEIMPORTTIME", "PYTHONSTARTUP", "PYTHONUSERBASE", "RBENV_DIR",
+	"RBENV_HOOK_PATH", "RBENV_ROOT", "RES_OPTIONS", "RUBYLIB", "RUBYOPT", "SHELL", "TERM",
+	"TERMINFO", "TERMINFO_DIRS", "TERMPATH", "TMPDIR", "USER", "XDG_CONFIG_DIRS",
+	"XDG_DATA_DIRS", "ZDOTDIR", NULL
 };
-
 static const char *forbidden_env_prefixes[] = {
-	"BASH_FUNC_",
-	"LD_",
-	NULL
+	"BASH_FUNC_", "DYLD_", "LD_", "LIBPATH", "LOCPATH", "MALLOC_", "PERLIO_",
+	"PYTHON", "RUBY", NULL
 };
 
-static void __attribute__((noreturn))
-child_die(const char *fmt, ...)
-{
-	va_list ap;
+static void print_banner(FILE *stream);
+static void close_fds_except(int keep_fd);
+static char *serialize_cache_scope(const struct context *ctx, const struct rule *match);
+static void write_errno_to_pipe(int fd, int err);
 
+static void write_errno_to_pipe(int fd, int err) {
+	while (write(fd, &err, sizeof(err)) == -1 && errno == EINTR)
+		;
+}
+
+static void __attribute__((noreturn)) child_die(const char *fmt, ...) {
+	va_list ap;
 	dprintf(STDERR_FILENO, "elev: ");
 	va_start(ap, fmt);
 	vdprintf(STDERR_FILENO, fmt, ap);
@@ -56,11 +58,8 @@ child_die(const char *fmt, ...)
 	_exit(1);
 }
 
-void
-die(const char *fmt, ...)
-{
+void die(const char *fmt, ...) {
 	va_list ap;
-
 	fprintf(stderr, "elev: ");
 	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap);
@@ -69,25 +68,28 @@ die(const char *fmt, ...)
 	exit(1);
 }
 
-static void
-usage(void)
-{
-	fprintf(stderr, "        .__               \n");
-	fprintf(stderr, "  ____ |  |   _______  __\n");
-	fprintf(stderr, "_/ __ \\|  | _/ __ \\  \\/ /\n");
-	fprintf(stderr, "\\  ___/|  |_\\  ___/\\   / \n");
-	fprintf(stderr, " \\___  >____/\\___  >\\_/  \n");
-	fprintf(stderr, "     \\/          \\/      \n\n");
-	fprintf(stderr, "elev 1.0.0\n");
+static void usage(void) {
+	print_banner(stderr);
 	fprintf(stderr, "usage: elev [-v] [-k] [-u user] command [args...]\n");
 	exit(1);
 }
 
-static bool
-is_forbidden(const char *var)
-{
-	int i;
+static void print_banner(FILE *stream) {
+	fprintf(stream, "        .__               \n");
+	fprintf(stream, "  ____ |  |   _______  __\n");
+	fprintf(stream, "_/ __ \\|  | _/ __ \\  \\/ /\n");
+	fprintf(stream, "\\  ___/|  |_\\  ___/\\   / \n");
+	fprintf(stream, " \\___  >____/\\___  >\\_/  \n");
+	fprintf(stream, "     \\/          \\/      \n\n");
+	fprintf(stream, "elev 1.0.0\n");
+}
 
+static void print_version(void) {
+	print_banner(stdout);
+}
+
+static bool is_forbidden(const char *var) {
+	int i;
 	for (i = 0; forbidden_env[i]; i++) {
 		if (strcmp(var, forbidden_env[i]) == 0)
 			return true;
@@ -96,79 +98,58 @@ is_forbidden(const char *var)
 		if (strncmp(var, forbidden_env_prefixes[i],
 		    strlen(forbidden_env_prefixes[i])) == 0)
 			return true;
-	}
-	return false;
+	} return false;
 }
 
-static void
-free_keep_vals(char *keep_vals[], int count)
-{
+static void free_keep_vals(char *keep_vals[], int count) {
 	int i;
-
 	for (i = 0; i < count; i++)
 		free(keep_vals[i]);
 }
 
-static bool
-safe_setenv(const char *name, const char *value)
-{
+static bool safe_setenv(const char *name, const char *value) {
 	return setenv(name, value, 1) == 0;
 }
 
-static bool
-is_allowed_pam_env(const char *name)
-{
+static bool is_allowed_pam_env(const char *name) {
 	return strcmp(name, "TERM") == 0;
 }
 
-static bool
-apply_pam_env_entry(const char *entry)
-{
+static bool apply_pam_env_entry(const char *entry) {
 	const char *sep;
 	size_t name_len;
 	char name[256];
-
 	sep = strchr(entry, '=');
 	if (!sep)
 		return true;
-
 	name_len = (size_t)(sep - entry);
 	if (name_len == 0 || name_len >= sizeof(name))
 		return true;
-
 	memcpy(name, entry, name_len);
 	name[name_len] = '\0';
-
 	if (!valid_env_name(name) || is_forbidden(name))
 		return true;
 	if (!is_allowed_pam_env(name))
 		return true;
-
 	return safe_setenv(name, sep + 1);
 }
 
-static bool
-set_target_env(const struct context *ctx)
-{
+static bool set_target_env(const struct context *ctx) {
 	const char *shell = ctx->target_shell && ctx->target_shell[0] ?
 	    ctx->target_shell : "/bin/sh";
 	const char *home = ctx->target_home ? ctx->target_home : "/";
-
 	return safe_setenv("HOME", home) &&
 	    safe_setenv("USER", ctx->target_name) &&
 	    safe_setenv("LOGNAME", ctx->target_name) &&
 	    safe_setenv("SHELL", shell);
 }
 
-static bool
-secure_env(struct rule *match, const struct context *ctx, char **pam_env)
-{
+static bool secure_env(struct rule *match, const struct context *ctx, char **pam_env) {
 	char *keep_vals[MAX_ENV_KEEP] = {0};
 	char *term, *saved_term = NULL;
 	int saved_errno = 0;
 	int i;
 	bool ok = false;
-
 	for (i = 0; i < match->keepenv_count; i++) {
 		if (is_forbidden(match->keepenv[i])) {
 			keep_vals[i] = NULL;
@@ -197,7 +178,7 @@ secure_env(struct rule *match, const struct context *ctx, char **pam_env)
 		saved_term = NULL;
 	}
 
-	if (clearenv() != 0) {
+	if (!clear_environment()) {
 		saved_errno = errno;
 		goto out;
 	}
@@ -231,7 +212,6 @@ secure_env(struct rule *match, const struct context *ctx, char **pam_env)
 		saved_errno = errno;
 		goto out;
 	}
-
 	ok = true;
 
 	out:
@@ -243,30 +223,132 @@ secure_env(struct rule *match, const struct context *ctx, char **pam_env)
 	return ok;
 }
 
-static void
-free_context(struct context *ctx)
-{
+static void free_context(struct context *ctx) {
+	int i;
 	free(ctx->user);
 	free(ctx->groups);
+	if (ctx->group_names) {
+		for (i = 0; i < ctx->group_count; i++)
+			free(ctx->group_names[i]);
+	}
+	free(ctx->group_names);
 	free(ctx->target_name);
 	free(ctx->target_home);
 	free(ctx->target_shell);
 }
 
-static void
-close_fds_except(int keep_fd)
-{
+static void init_current_user(struct context *ctx) {
+	struct passwd *pw = getpwuid(getuid());
+	if (!pw)
+		die("getpwuid");
+	ctx->user = xstrdup(pw->pw_name);
+	ctx->uid = pw->pw_uid;
+}
+
+static void init_user_groups(struct context *ctx) {
+	int i;
+	ctx->group_count = getgroups(0, NULL);
+	if (ctx->group_count == -1)
+		die("getgroups");
+	if (ctx->group_count <= 0)
+		return;
+	ctx->groups = xcalloc(ctx->group_count, sizeof(gid_t));
+	ctx->group_names = xcalloc(ctx->group_count, sizeof(char *));
+	if (getgroups(ctx->group_count, ctx->groups) == -1)
+		die("getgroups");
+	for (i = 0; i < ctx->group_count; i++) {
+		struct group *gr = getgrgid(ctx->groups[i]);
+		if (!gr)
+			continue;
+		ctx->group_names[i] = xstrdup(gr->gr_name);
+	}
+}
+
+static void init_target_user(struct context *ctx) {
+	struct passwd *pw;
+	char *end = NULL;
+	unsigned long uid;
+
+	errno = 0;
+	uid = strtoul(ctx->target_user, &end, 10);
+	if (errno == 0 && end && *end == '\0')
+		pw = getpwuid((uid_t)uid);
+	else
+		pw = getpwnam(ctx->target_user);
+	if (!pw)
+		die("unknown user: %s", ctx->target_user);
+	ctx->target_uid = pw->pw_uid;
+	ctx->target_gid = pw->pw_gid;
+	ctx->target_name = xstrdup(pw->pw_name);
+	ctx->target_home = xstrdup(pw->pw_dir ? pw->pw_dir : "/");
+	ctx->target_shell = xstrdup(pw->pw_shell ? pw->pw_shell : "/bin/sh");
+}
+
+static struct rule *find_matching_rule(struct rule *rules, const struct context *ctx) {
+	struct rule *r;
+	struct rule *match = NULL;
+	for (r = rules; r; r = r->next) {
+		if (match_rule(r, ctx))
+			match = r;
+	} 
+	return match;
+}
+
+static void close_exec_pipe(int exec_pipe[2]) {
+	if (exec_pipe[0] != -1)
+		close(exec_pipe[0]);
+	if (exec_pipe[1] != -1)
+		close(exec_pipe[1]);
+}
+
+static void child_fail(int exec_pipe[2], int err, const char *msg) {
+	write_errno_to_pipe(exec_pipe[1], err);
+	child_die("%s: %s", msg, strerror(err));
+}
+
+static void run_child(const struct context *ctx, struct rule *match, char **pam_env, int exec_pipe[2]) {
+	int exec_errno;
+	close(exec_pipe[0]);
+	if (initgroups(ctx->target_name, ctx->target_gid) != 0)
+		child_fail(exec_pipe, errno, "initgroups");
+	if (setgid(ctx->target_gid) != 0)
+		child_fail(exec_pipe, errno, "setgid");
+	if (setuid(ctx->target_uid) != 0)
+		child_fail(exec_pipe, errno, "setuid");
+	if (!secure_env(match, ctx, pam_env))
+		child_fail(exec_pipe, errno, "secure_env");
+
+	close_fds_except(exec_pipe[1]);
+	execvp(ctx->cmd_argv[0], ctx->cmd_argv);
+	exec_errno = errno;
+	write_errno_to_pipe(exec_pipe[1], exec_errno);
+	child_die("execvp: %s: %s", ctx->cmd_argv[0], strerror(exec_errno));
+}
+
+static void log_exec_result(const struct context *ctx, int exec_pipe[2]) {
+	int exec_errno = 0;
+	close(exec_pipe[1]);
+	if (read(exec_pipe[0], &exec_errno, sizeof(exec_errno)) == 0) {
+		syslog(LOG_INFO, "started: %s as %s: %s", ctx->user, ctx->target_user,
+		    ctx->cmd_argv[0]);
+	} else {
+		syslog(LOG_WARNING, "start failed: %s as %s: %s: %s", ctx->user,
+		    ctx->target_user, ctx->cmd_argv[0], strerror(exec_errno));
+	}
+	close(exec_pipe[0]);
+	exec_pipe[0] = -1;
+}
+
+static void close_fds_except(int keep_fd) {
 	DIR *dir;
 	struct dirent *ent;
 	struct rlimit rl;
 	long max_fd;
 	long fd;
 	char *end;
-
 	dir = opendir("/proc/self/fd");
 	if (dir) {
 		int dir_fd = dirfd(dir);
-
 		while ((ent = readdir(dir)) != NULL) {
 			errno = 0;
 			fd = strtol(ent->d_name, &end, 10);
@@ -278,23 +360,18 @@ close_fds_except(int keep_fd)
 		closedir(dir);
 		return;
 	}
-
 	if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
 		max_fd = (long)rl.rlim_cur;
 	else
 		max_fd = 1024;
-
 	for (fd = 3; fd < max_fd; fd++) {
 		if (fd != keep_fd)
 			close(fd);
 	}
 }
 
-static unsigned long
-hash_bytes(unsigned long h, const char *s)
-{
+static unsigned long hash_bytes(unsigned long h, const char *s) {
 	const unsigned char *p = (const unsigned char *)s;
-
 	if (!s)
 		s = "";
 	for (p = (const unsigned char *)s; *p; p++) {
@@ -306,32 +383,55 @@ hash_bytes(unsigned long h, const char *s)
 	return h;
 }
 
-static void
-build_cache_scope(const struct context *ctx, const struct rule *match,
-	char *buf, size_t len)
-{
-	unsigned long h = 1469598103934665603UL;
+static void write_scope_field(FILE *stream, const char *value) {
+	size_t value_len = value ? strlen(value) : 0;
+	if (fprintf(stream, "%zu:", value_len) < 0)
+		die("open_memstream");
+	if (value_len != 0 && fwrite(value, 1, value_len, stream) != value_len)
+		die("open_memstream");
+	if (fputc('\n', stream) == EOF)
+		die("open_memstream");
+}
+
+static char *serialize_cache_scope(const struct context *ctx, const struct rule *match) {
+	FILE *stream;
+	char *buf = NULL;
+	size_t len = 0;
 	int i;
 
-	h = hash_bytes(h, ctx->target_name);
-	h = hash_bytes(h, match->who);
-	h = hash_bytes(h, match->as_user);
-	h = hash_bytes(h, match->cmd);
-	h = hash_bytes(h, match->deny_cmd);
-	for (i = 0; i < match->argc; i++)
-		h = hash_bytes(h, match->args[i]);
-	h = hash_bytes(h, ctx->cmd_argv[0]);
-	for (i = 1; i < ctx->cmd_argc; i++)
-		h = hash_bytes(h, ctx->cmd_argv[i]);
+	stream = open_memstream(&buf, &len);
+	if (!stream)
+		die("open_memstream: %s", strerror(errno));
 
+	write_scope_field(stream, ctx->target_name);
+	write_scope_field(stream, match->who);
+	write_scope_field(stream, match->as_user);
+	write_scope_field(stream, match->cmd);
+	write_scope_field(stream, match->deny_cmd);
+
+	for (i = 0; i < match->argc; i++)
+		write_scope_field(stream, match->args[i]);
+	write_scope_field(stream, NULL);
+
+	for (i = 0; i < ctx->cmd_argc; i++)
+		write_scope_field(stream, ctx->cmd_argv[i]);
+
+	if (fclose(stream) != 0) {
+		free(buf);
+		die("fclose: open_memstream: %s", strerror(errno));
+	}
+	return buf;
+}
+
+static void build_cache_scope(const char *scope_data, char *buf, size_t len) {
+	unsigned long h = 1469598103934665603UL;
+
+	h = hash_bytes(h, scope_data);
 	snprintf(buf, len, "%016lx", h);
 }
 
-static int
-wait_for_child(pid_t pid)
-{
+static int wait_for_child(pid_t pid) {
 	int status;
-
 	while (waitpid(pid, &status, 0) == -1) {
 		if (errno != EINTR)
 			die("waitpid: %s", strerror(errno));
@@ -347,14 +447,13 @@ int
 main(int argc, char **argv)
 {
 	struct context ctx = {0};
-	struct rule *rules, *r, *match = NULL;
-	struct passwd *pw;
+	struct rule *rules, *match = NULL;
 	pid_t pid;
 	pam_handle_t *pamh = NULL;
 	char **pam_env = NULL;
 	char cache_scope[32];
+	char *cache_scope_data = NULL;
 	int exec_pipe[2] = {-1, -1};
-	int exec_errno = 0;
 	int ch;
 	int status;
 	bool reset_ts = false;
@@ -380,13 +479,7 @@ main(int argc, char **argv)
 			ctx.target_user = optarg;
 			break;
 		case 'v':
-			printf("        .__               \n");
-			printf("  ____ |  |   _______  __\n");
-			printf("_/ __ \\|  | _/ __ \\  \\/ /\n");
-			printf("\\  ___/|  |_\\  ___/\\   / \n");
-			printf(" \\___  >____/\\___  >\\_/  \n");
-			printf("     \\/          \\/      \n\n");
-			printf("elev 1.0.0\n");
+			print_version();
 			exit(0);
 		case 'h':
 			usage();
@@ -403,12 +496,7 @@ main(int argc, char **argv)
 	ctx.cmd_argv = argv;
 	ctx.cmd_argc = argc;
 
-	if (!(pw = getpwuid(getuid())))
-		die("getpwuid");
-	ctx.user = strdup(pw->pw_name);
-	if (!ctx.user)
-		die("malloc");
-	ctx.uid = pw->pw_uid;
+	init_current_user(&ctx);
 
 	if (reset_ts) {
 		reset_persistence(ctx.user);
@@ -418,105 +506,53 @@ main(int argc, char **argv)
 		}
 	}
 	
-	ctx.group_count = getgroups(0, NULL);
-	if (ctx.group_count == -1)
-		die("getgroups");
-	if (ctx.group_count > 0) {
-		ctx.groups = calloc(ctx.group_count, sizeof(gid_t));
-		if (!ctx.groups)
-			die("malloc");
-		if (getgroups(ctx.group_count, ctx.groups) == -1)
-			die("getgroups");
-	}
-
-	if (!(pw = getpwnam(ctx.target_user)))
-		die("unknown user: %s", ctx.target_user);
-	ctx.target_uid = pw->pw_uid;
-	ctx.target_gid = pw->pw_gid;
-	ctx.target_name = strdup(pw->pw_name);
-	ctx.target_home = strdup(pw->pw_dir ? pw->pw_dir : "/");
-	ctx.target_shell = strdup(pw->pw_shell ? pw->pw_shell : "/bin/sh");
-	if (!ctx.target_name || !ctx.target_home || !ctx.target_shell)
-		die("malloc");
+	init_user_groups(&ctx);
+	init_target_user(&ctx);
 
 	rules = parse_config(ELEV_CONF);
 	if (!rules)
 		die("config: parse error");
 
-	for (r = rules; r; r = r->next) {
-		if (match_rule(r, &ctx))
-			match = r;
-	}
+	match = find_matching_rule(rules, &ctx);
 
 	if (!match || match->type == RULE_DENY) {
 		syslog(LOG_WARNING, "denied: %s as %s: %s", ctx.user, ctx.target_user, ctx.cmd_argv[0]);
 		die("access denied");
 	}
 
-	build_cache_scope(&ctx, match, cache_scope, sizeof(cache_scope));
+	cache_scope_data = serialize_cache_scope(&ctx, match);
+	build_cache_scope(cache_scope_data, cache_scope, sizeof(cache_scope));
 
-	if (authenticate_pam(ctx.user, cache_scope, match->nopass, match->persist,
+	if (authenticate_pam(ctx.user, cache_scope, cache_scope_data,
+	    match->nopass, match->persist,
 	    &pamh, &pam_session_open, &pam_creds_established) != 0) {
 		syslog(LOG_WARNING, "auth failed: %s as %s", ctx.user, ctx.target_user);
+		free(cache_scope_data);
 		die("auth failed");
 	}
 	pam_env = pamh ? pam_getenvlist(pamh) : NULL;
 
-	if (pipe2(exec_pipe, O_CLOEXEC) == -1) {
+	if (pipe_cloexec(exec_pipe) == -1) {
+		free(cache_scope_data);
 		free_env_list(pam_env);
 		cleanup_pam(pamh, pam_session_open, pam_creds_established, PAM_ABORT);
-		die("pipe2: %s", strerror(errno));
+		die("pipe: %s", strerror(errno));
 	}
 
 	pid = fork();
 	if (pid == -1) {
-		close(exec_pipe[0]);
-		close(exec_pipe[1]);
+		close_exec_pipe(exec_pipe);
+		free(cache_scope_data);
 		free_env_list(pam_env);
 		cleanup_pam(pamh, pam_session_open, pam_creds_established, PAM_ABORT);
 		die("fork: %s", strerror(errno));
 	}
-	if (pid == 0) {
-		close(exec_pipe[0]);
-		if (setgid(ctx.target_gid) != 0) {
-			exec_errno = errno;
-			(void)write(exec_pipe[1], &exec_errno, sizeof(exec_errno));
-			child_die("setgid");
-		}
-		if (initgroups(ctx.target_user, ctx.target_gid) != 0) {
-			exec_errno = errno;
-			(void)write(exec_pipe[1], &exec_errno, sizeof(exec_errno));
-			child_die("initgroups");
-		}
-		if (setuid(ctx.target_uid) != 0) {
-			exec_errno = errno;
-			(void)write(exec_pipe[1], &exec_errno, sizeof(exec_errno));
-			child_die("setuid");
-		}
+	if (pid == 0)
+		run_child(&ctx, match, pam_env, exec_pipe);
 
-		if (!secure_env(match, &ctx, pam_env)) {
-			exec_errno = errno;
-			(void)write(exec_pipe[1], &exec_errno, sizeof(exec_errno));
-			child_die("secure_env: %s", strerror(errno));
-		}
+	log_exec_result(&ctx, exec_pipe);
 
-		close_fds_except(exec_pipe[1]);
-		execvp(ctx.cmd_argv[0], ctx.cmd_argv);
-		exec_errno = errno;
-		(void)write(exec_pipe[1], &exec_errno, sizeof(exec_errno));
-		child_die("execvp: %s: %s", ctx.cmd_argv[0], strerror(exec_errno));
-	}
-
-	close(exec_pipe[1]);
-	if (read(exec_pipe[0], &exec_errno, sizeof(exec_errno)) == 0) {
-		syslog(LOG_INFO, "started: %s as %s: %s", ctx.user, ctx.target_user,
-		    ctx.cmd_argv[0]);
-	} else {
-		syslog(LOG_WARNING, "start failed: %s as %s: %s: %s", ctx.user,
-		    ctx.target_user, ctx.cmd_argv[0], strerror(exec_errno));
-	}
-	close(exec_pipe[0]);
-
+	free(cache_scope_data);
 	free_context(&ctx);
 	free_rules(rules);
 	free_env_list(pam_env);

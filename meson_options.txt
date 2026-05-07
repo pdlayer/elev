@@ -1,0 +1,13 @@
+option(
+  'pamdir',
+  type : 'string',
+  value : '/etc/pam.d',
+  description : 'Directory for installing the PAM policy file',
+)
+
+option(
+  'runtime_dir',
+  type : 'string',
+  value : '/var/run/elev',
+  description : 'Runtime directory used for authentication persistence',
+)

@@ -1,24 +1,144 @@
 #include <security/pam_appl.h>
-#include <security/pam_misc.h>
 
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "elev.h"
 
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
+
+#ifndef O_NOFOLLOW
+#define O_NOFOLLOW 0
+#endif
+
+static char *
+read_pam_line(int echo, const char *prompt)
+{
+	struct termios old_termios, new_termios;
+	bool changed = false;
+	char *line = NULL;
+	size_t cap = 0;
+	ssize_t nread;
+
+	if (prompt && fputs(prompt, stderr) == EOF)
+		return NULL;
+	fflush(stderr);
+
+	if (!echo && isatty(STDIN_FILENO)) {
+		if (tcgetattr(STDIN_FILENO, &old_termios) == 0) {
+			new_termios = old_termios;
+			new_termios.c_lflag &= ~(ECHO);
+			if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_termios) == 0)
+				changed = true;
+		}
+	}
+
+	nread = getline(&line, &cap, stdin);
+	if (nread == -1) {
+		if (changed) {
+			tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
+			fputc('\n', stderr);
+			fflush(stderr);
+		}
+		free(line);
+		return NULL;
+	}
+
+	if (changed) {
+		tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
+		fputc('\n', stderr);
+		fflush(stderr);
+	}
+
+	if (nread > 0 && line[nread - 1] == '\n')
+		line[nread - 1] = '\0';
+
+	return line;
+}
+
+static int
+pam_conversation(int num_msg, const struct pam_message **msg,
+	struct pam_response **resp, void *appdata_ptr)
+{
+	struct pam_response *replies;
+	int i;
+
+	(void)appdata_ptr;
+
+	if (num_msg <= 0 || !msg || !resp)
+		return PAM_CONV_ERR;
+
+	replies = xcalloc((size_t)num_msg, sizeof(*replies));
+	for (i = 0; i < num_msg; i++) {
+		switch (msg[i]->msg_style) {
+		case PAM_PROMPT_ECHO_OFF:
+			replies[i].resp = read_pam_line(0, msg[i]->msg);
+			if (!replies[i].resp)
+				goto fail;
+			break;
+		case PAM_PROMPT_ECHO_ON:
+			replies[i].resp = read_pam_line(1, msg[i]->msg);
+			if (!replies[i].resp)
+				goto fail;
+			break;
+		case PAM_ERROR_MSG:
+			if (msg[i]->msg) {
+				fprintf(stderr, "%s\n", msg[i]->msg);
+				fflush(stderr);
+			}
+			break;
+		case PAM_TEXT_INFO:
+			if (msg[i]->msg) {
+				fprintf(stdout, "%s\n", msg[i]->msg);
+				fflush(stdout);
+			}
+			break;
+		default:
+			goto fail;
+		}
+	}
+
+	*resp = replies;
+	return PAM_SUCCESS;
+
+fail:
+	for (i = 0; i < num_msg; i++) {
+		free(replies[i].resp);
+		replies[i].resp = NULL;
+	}
+	free(replies);
+	return PAM_CONV_ERR;
+}
+
 static struct pam_conv conv = {
-	misc_conv,
+	pam_conversation,
 	NULL
 };
+
+static mode_t
+set_private_umask(void)
+{
+	return umask(077);
+}
+
+static void
+restore_umask(mode_t old_umask)
+{
+	umask(old_umask);
+}
 
 static bool
 get_tty_path(const char *user, const char *scope, char *buf, size_t len)
@@ -71,21 +191,124 @@ validate_persist_dir(void)
 }
 
 static bool
-check_persist(const char *user, const char *scope, long limit)
+is_valid_persist_file(const struct stat *st)
+{
+	return S_ISREG(st->st_mode) && st->st_uid == 0 &&
+	    !(st->st_mode & (S_IRWXG | S_IRWXO));
+}
+
+static bool
+same_file_object(const struct stat *a, const struct stat *b)
+{
+	return a->st_dev == b->st_dev && a->st_ino == b->st_ino;
+}
+
+static void
+validate_persist_path_identity(const char *path, int fd)
+{
+	struct stat lst, fst;
+
+	if (lstat(path, &lst) != 0)
+		die("lstat: %s: %s", path, strerror(errno));
+	if (S_ISLNK(lst.st_mode))
+		die("security: symbolic links are not allowed: %s", path);
+	if (fstat(fd, &fst) != 0)
+		die("fstat: %s: %s", path, strerror(errno));
+	if (!same_file_object(&lst, &fst))
+		die("security: path changed while opening: %s", path);
+}
+
+static int
+open_persist_existing(const char *path, int flags)
+{
+	struct stat lst;
+	int fd;
+
+	if (lstat(path, &lst) != 0)
+		return -1;
+	if (S_ISLNK(lst.st_mode)) {
+		errno = ELOOP;
+		return -1;
+	}
+#ifdef O_NOFOLLOW
+	flags |= O_NOFOLLOW;
+#endif
+	fd = open(path, flags);
+	if (fd == -1)
+		return -1;
+	validate_persist_path_identity(path, fd);
+	return fd;
+}
+
+static void
+ensure_persist_dir(void)
+{
+	mode_t old_umask;
+
+	validate_persist_dir();
+	old_umask = set_private_umask();
+	if (mkdir(ELEV_RUN, 0700) == -1) {
+		restore_umask(old_umask);
+		if (errno != EEXIST)
+			die("mkdir: %s: %s", ELEV_RUN, strerror(errno));
+		if (lstat(ELEV_RUN, &(struct stat){0}) != 0)
+			die("lstat: %s: %s", ELEV_RUN, strerror(errno));
+		validate_persist_dir();
+		return;
+	}
+	restore_umask(old_umask);
+}
+
+static bool
+check_persist(const char *user, const char *scope_key,
+	const char *scope_data, long limit)
 {
 	struct stat st;
 	time_t now = time(NULL);
 	char path[PATH_MAX];
+	int fd;
+	size_t expected_len;
+	ssize_t nread;
+	char buf[512];
+	size_t offset = 0;
 
 	validate_persist_dir();
-	if (!get_tty_path(user, scope, path, sizeof(path)))
+	if (!get_tty_path(user, scope_key, path, sizeof(path)))
 		return false;
 
 	if (lstat(path, &st) != 0)
 		return false;
 
-	if (!S_ISREG(st.st_mode) || st.st_uid != 0 ||
-	    (st.st_mode & (S_IRWXG | S_IRWXO)))
+	if (!is_valid_persist_file(&st))
+		return false;
+
+	fd = open_persist_existing(path, O_RDONLY | O_CLOEXEC);
+	if (fd == -1)
+		return false;
+	if (fstat(fd, &st) != 0 || !is_valid_persist_file(&st)) {
+		close(fd);
+		return false;
+	}
+
+	expected_len = strlen(scope_data);
+	if ((size_t)st.st_size != expected_len) {
+		close(fd);
+		return false;
+	}
+
+	while ((nread = read(fd, buf, sizeof(buf))) > 0) {
+		if ((size_t)nread > expected_len - offset) {
+			close(fd);
+			return false;
+		}
+		if (memcmp(scope_data + offset, buf, (size_t)nread) != 0) {
+			close(fd);
+			return false;
+		}
+		offset += (size_t)nread;
+	}
+	close(fd);
+	if (nread < 0 || offset != expected_len)
 		return false;
 
 	if (limit == -1)
@@ -104,45 +327,44 @@ check_persist(const char *user, const char *scope, long limit)
 }
 
 static void
-update_persist(const char *user, const char *scope)
+update_persist(const char *user, const char *scope_key,
+	const char *scope_data)
 {
 	char path[PATH_MAX];
 	struct stat st;
 	int fd;
+	mode_t old_umask;
+	size_t scope_len = strlen(scope_data);
 
-	validate_persist_dir();
-	if (mkdir(ELEV_RUN, 0700) == -1) {
-		if (errno != EEXIST)
-			die("mkdir: %s: %s", ELEV_RUN, strerror(errno));
-		if (lstat(ELEV_RUN, &st) != 0)
-			die("lstat: %s: %s", ELEV_RUN, strerror(errno));
-		if (!S_ISDIR(st.st_mode))
-			die("security: %s: not a directory", ELEV_RUN);
-		if (st.st_uid != 0)
-			die("security: %s: not owned by root", ELEV_RUN);
-		if (st.st_mode & (S_IWGRP | S_IWOTH))
-			die("security: %s: writable by group or others", ELEV_RUN);
-	}
-	if (!get_tty_path(user, scope, path, sizeof(path)))
+	ensure_persist_dir();
+	if (!get_tty_path(user, scope_key, path, sizeof(path)))
 		return;
 
-	fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+	old_umask = set_private_umask();
+	fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+	restore_umask(old_umask);
+	if (fd == -1 && errno == EEXIST)
+		fd = open_persist_existing(path, O_RDWR | O_CLOEXEC);
 	if (fd == -1)
 		die("open: %s: %s", path, strerror(errno));
 	if (fstat(fd, &st) != 0) {
 		close(fd);
 		die("fstat: %s: %s", path, strerror(errno));
 	}
-	if (!S_ISREG(st.st_mode) || st.st_uid != 0 ||
-	    (st.st_mode & (S_IRWXG | S_IRWXO))) {
+	if (!is_valid_persist_file(&st)) {
 		close(fd);
 		die("security: insecure persistence file: %s", path);
 	}
-	if (write(fd, "1", 1) != 1) {
+	if (lseek(fd, 0, SEEK_SET) == (off_t)-1) {
+		close(fd);
+		die("lseek: %s: %s", path, strerror(errno));
+	}
+	if (scope_len != 0 &&
+	    write(fd, scope_data, scope_len) != (ssize_t)scope_len) {
 		close(fd);
 		die("write: %s: %s", path, strerror(errno));
 	}
-	if (ftruncate(fd, 0) != 0) {
+	if (ftruncate(fd, (off_t)scope_len) != 0) {
 		close(fd);
 		die("ftruncate: %s: %s", path, strerror(errno));
 	}
@@ -199,6 +421,7 @@ legacy:
 
 int
 authenticate_pam(const char *user, const char *cache_scope,
+	const char *cache_scope_data,
 	bool nopass, long persist,
 	pam_handle_t **pamh_out, bool *session_open, bool *creds_established)
 {
@@ -206,25 +429,28 @@ authenticate_pam(const char *user, const char *cache_scope,
 	int retval;
 	bool opened = false;
 	bool creds = false;
+	bool skip_auth = false;
 
 	*pamh_out = NULL;
 	*session_open = false;
 	*creds_established = false;
 
 	if (nopass)
-		return 0;
-
-	if (persist != 0 && check_persist(user, cache_scope, persist))
-		return 0;
+		skip_auth = true;
+	else if (persist != 0 &&
+	    check_persist(user, cache_scope, cache_scope_data, persist))
+		skip_auth = true;
 
 	retval = pam_start("elev", user, &conv, &pamh);
 	if (retval != PAM_SUCCESS)
 		return -1;
 
-	retval = pam_authenticate(pamh, 0);
-	if (retval != PAM_SUCCESS) {
-		pam_end(pamh, retval);
-		return -1;
+	if (!skip_auth) {
+		retval = pam_authenticate(pamh, 0);
+		if (retval != PAM_SUCCESS) {
+			pam_end(pamh, retval);
+			return -1;
+		}
 	}
 
 	retval = pam_acct_mgmt(pamh, 0);
@@ -249,7 +475,7 @@ authenticate_pam(const char *user, const char *cache_scope,
 	opened = true;
 
 	if (persist != 0)
-		update_persist(user, cache_scope);
+		update_persist(user, cache_scope, cache_scope_data);
 
 	*pamh_out = pamh;
 	*session_open = opened;

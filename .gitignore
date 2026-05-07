@@ -1,6 +1,13 @@
 build/
+builddir/
+build-meson/
 src/
 pkg/
 srcpkg/
 *.pkg.tar.zst
 *.pkg.tar.gz
+meson-logs/
+meson-private/
+.ninja_log
+.ninja_deps
+compile_commands.json

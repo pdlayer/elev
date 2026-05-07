@@ -26,6 +26,9 @@ invocations always require fresh authentication.
 Cached authentication is scoped to the target user, matched rule, and command
 line.
 .PP
+\fBelev\fR is designed to stay portable across Linux, FreeBSD, NetBSD, and
+OpenBSD. macOS can also work, but may require a locally tailored PAM policy.
+.PP
 The parent process keeps the PAM session open while the target command runs and
 closes it after the command exits.
 
@@ -74,12 +77,13 @@ Policy configuration file.
 .TP
 .I /etc/pam.d/elev
 PAM configuration file. A default profile is installed with
-.BR make\ install ,
+.BR meson\ install ,
 but systems without a
 .B system-auth
-stack may need local adjustments.
+stack, BSD-style PAM stacks, or macOS-specific PAM policy may need local
+adjustments.
 .TP
-.I /run/elev/
+.I /var/run/elev/
 Directory used for authentication persistence timestamps.
 
 .SH SEE ALSO

@@ -49,6 +49,8 @@ and command line, so one cached authentication does not unlock unrelated
 \fBpersist\fR rules.
 For non-TTY invocations, persistence is disabled entirely to avoid sharing a
 single cache across unrelated background sessions.
+The default runtime directory is \fB/var/run/elev\fR, but distributors may
+override it at build time.
 .TP
 \fBkeepenv {\fR\fIVARS\fR\fB}\fR
 Allows preserving specific environment variables from the user's session. \fIVARS\fR is a comma-separated list.

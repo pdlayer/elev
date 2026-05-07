@@ -2,12 +2,16 @@
 #define ELEV_H
 
 #include <stdbool.h>
-#include <security/pam_appl.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <security/pam_appl.h>
 #include <sys/types.h>
 
 #define ELEV_CONF "/etc/elev/conf"
-#define ELEV_RUN "/run/elev"
+#ifndef ELEV_RUN
+#define ELEV_RUN "/var/run/elev"
+#endif
 #define MAX_ARGC 64
 #define MAX_ENV_KEEP 64
 
@@ -37,6 +41,7 @@ struct context {
 	uid_t uid;
 	gid_t gid;
 	gid_t *groups;
+	char **group_names;
 	int group_count;
 	char *target_user;
 	uid_t target_uid;
@@ -48,13 +53,13 @@ struct context {
 	int cmd_argc;
 };
 
-struct rule *parse_config(const char *path);
-bool match_rule(const struct rule *r, const struct context *ctx);
-void free_rules(struct rule *rules);
-bool valid_env_name(const char *name);
-void free_env_list(char **env);
+struct rule *parse_config(const char *path); bool match_rule(const struct rule *r, const struct context *ctx);
+void free_rule(struct rule *rule); void free_rules(struct rule *rules); bool valid_env_name(const char *name);
+void free_env_list(char **env); void *xcalloc(size_t nmemb, size_t size); char *xstrdup(const char *s);
+bool clear_environment(void); int pipe_cloexec(int pipefd[2]);
 
 int authenticate_pam(const char *user, const char *cache_scope,
+	const char *cache_scope_data,
 	bool nopass, long persist,
 	pam_handle_t **pamh, bool *session_open, bool *creds_established);
 void cleanup_pam(pam_handle_t *pamh, bool session_open,

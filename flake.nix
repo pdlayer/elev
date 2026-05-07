@@ -7,7 +7,7 @@
 
   outputs = { self, nixpkgs }:
     let
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
+      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       pkgsFor = system: import nixpkgs { inherit system; };
     in
@@ -23,13 +23,8 @@
 
             src = ./.;
 
-            nativeBuildInputs = [ pkgs.pkg-config ];
-            buildInputs = [ pkgs.pam ];
-
-            installPhase = ''
-              mkdir -p $out/bin $out/share/man/man1 $out/share/man/man5 $out/share/man/man7 $out/share/bash-completion/completions $out/share/zsh/site-functions
-              make install DESTDIR=$out PREFIX=
-            '';
+            nativeBuildInputs = [ pkgs.meson pkgs.ninja pkgs.pkg-config ];
+            buildInputs = pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.pam ];
           };
         });
 
@@ -39,8 +34,8 @@
         in
         {
           default = pkgs.mkShell {
-            nativeBuildInputs = [ pkgs.pkg-config pkgs.gcc pkgs.gnumake ];
-            buildInputs = [ pkgs.pam ];
+            nativeBuildInputs = [ pkgs.meson pkgs.ninja pkgs.pkg-config pkgs.stdenv.cc ];
+            buildInputs = pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.pam ];
           };
         });
 

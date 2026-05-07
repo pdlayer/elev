@@ -3,19 +3,20 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="sudo sucks."
 arch=('x86_64')
-license=('ISC')
+license=('BSD')
 depends=('pam')
-makedepends=('gcc' 'make')
+makedepends=('gcc' 'meson' 'ninja')
 install=elev.install
-source=('elev.c' 'config.c' 'pam.c' 'util.c' 'elev.h' 'elev.1' 'elev.5' 'elev.7' 'Makefile' 'elev.bash' 'elev.zsh' 'elev.install' 'elev.pam')
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+source=('elev.c' 'config.c' 'pam.c' 'util.c' 'elev.h' 'elev.1' 'elev.5' 'elev.7' 'meson.build' 'meson_options.txt' 'elev.bash' 'elev.zsh' 'elev.install' 'elev.pam')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 build() {
-	make
+	meson setup builddir --prefix=/usr
+	meson compile -C builddir
 }
 
 package() {
-	make DESTDIR="$pkgdir" PREFIX="/usr" install
+	DESTDIR="$pkgdir" meson install -C builddir
 	
 	install -dm700 "$pkgdir/etc/elev"
 }
