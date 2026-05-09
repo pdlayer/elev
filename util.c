@@ -23,6 +23,15 @@ bool valid_env_name(const char *name) {
 	return true;
 }
 
+bool is_safe_keepenv_name(const char *name) {
+	if (!valid_env_name(name))
+		return false;
+	if (strcmp(name, "TERM") == 0 || strcmp(name, "LANG") == 0 ||
+	    strcmp(name, "LANGUAGE") == 0)
+		return true;
+	return strncmp(name, "LC_", 3) == 0;
+}
+
 void free_env_list(char **env) {
 	int i;
 	if (!env)

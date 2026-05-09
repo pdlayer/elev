@@ -24,49 +24,242 @@
 #define O_NOFOLLOW 0
 #endif
 
+static int
+open_prompt_fd(void)
+{
+	int fd;
+
+	fd = open("/dev/tty", O_RDONLY | O_CLOEXEC);
+	if (fd != -1)
+		return fd;
+	if (!isatty(STDIN_FILENO))
+		return -1;
+	return STDIN_FILENO;
+}
+
+static bool
+get_controlling_tty_path(char *buf, size_t len)
+{
+	const char *tty = NULL;
+	int fd;
+	int n;
+
+	fd = open("/dev/tty", O_RDONLY | O_CLOEXEC);
+	if (fd != -1) {
+		tty = ttyname(fd);
+		close(fd);
+	} else if (isatty(STDIN_FILENO)) {
+		tty = ttyname(STDIN_FILENO);
+	}
+	if (!tty)
+		return false;
+	n = snprintf(buf, len, "%s", tty);
+	return n >= 0 && (size_t)n < len;
+}
+
+static void
+restore_terminal_mode(int fd, const struct termios *old_termios, bool changed)
+{
+	if (!changed)
+		return;
+	tcsetattr(fd, TCSANOW, old_termios);
+	fputc('\n', stderr);
+	fflush(stderr);
+}
+
+static char *
+read_pam_tty_secret(const char *prompt)
+{
+	struct termios old_termios, new_termios;
+	char *line = NULL;
+	size_t len = 0, cap = 0;
+	bool changed = false;
+	bool esc = false;
+	bool csi = false;
+	bool osc = false;
+	bool esc_st = false;
+	bool ss3 = false;
+	unsigned char ch;
+	ssize_t nread;
+	int fd = -1;
+
+	fd = open_prompt_fd();
+	if (fd == -1)
+		return NULL;
+
+	if (prompt && fputs(prompt, stderr) == EOF)
+		goto fail;
+	fflush(stderr);
+
+	if (tcgetattr(fd, &old_termios) != 0)
+		goto fail;
+	new_termios = old_termios;
+	new_termios.c_lflag &= ~(ECHO | ICANON);
+	new_termios.c_iflag &= ~(ICRNL | INLCR);
+	new_termios.c_cc[VMIN] = 1;
+	new_termios.c_cc[VTIME] = 0;
+	if (tcsetattr(fd, TCSAFLUSH, &new_termios) != 0)
+		goto fail;
+	changed = true;
+
+	for (;;) {
+		nread = read(fd, &ch, 1);
+		if (nread == -1) {
+			if (errno == EINTR)
+				continue;
+			goto fail;
+		}
+		if (nread == 0)
+			goto fail;
+
+		if (osc) {
+			if (esc_st) {
+				esc_st = false;
+				if (ch == '\\') {
+					osc = false;
+					continue;
+				}
+			}
+			if (ch == '\a') {
+				osc = false;
+				continue;
+			}
+			esc_st = (ch == 0x1b);
+			continue;
+		}
+
+		if (csi) {
+			if (ch >= 0x40 && ch <= 0x7e)
+				csi = false;
+			continue;
+		}
+
+		if (ss3) {
+			if (ch >= 0x40 && ch <= 0x7e)
+				ss3 = false;
+			continue;
+		}
+
+		if (esc) {
+			esc = false;
+			if (ch == '[') {
+				csi = true;
+				continue;
+			}
+			if (ch == 'O') {
+				ss3 = true;
+				continue;
+			}
+			if (ch == ']' || ch == 'P' || ch == '_' || ch == '^' || ch == 'X') {
+				osc = true;
+				esc_st = false;
+				continue;
+			}
+			continue;
+		}
+
+		if (ch == 0x90 || ch == 0x98 || ch == 0x9d || ch == 0x9e || ch == 0x9f) {
+			osc = true;
+			esc_st = false;
+			continue;
+		}
+		if (ch == 0x8f) {
+			ss3 = true;
+			continue;
+		}
+		if (ch == 0x9b) {
+			csi = true;
+			continue;
+		}
+		if (ch == 0x1b) {
+			esc = true;
+			continue;
+		}
+		if (ch == '\n' || ch == '\r')
+			break;
+		if (ch == 0x7f || ch == '\b') {
+			if (len > 0)
+				len--;
+			continue;
+		}
+		if (ch < 0x20)
+			continue;
+		if (len + 1 >= cap) {
+			size_t new_cap = cap ? cap * 2 : 64;
+			char *new_line = realloc(line, new_cap);
+			if (!new_line)
+				goto fail;
+			line = new_line;
+			cap = new_cap;
+		}
+		line[len++] = (char)ch;
+	}
+
+	if (!line) {
+		line = xcalloc(1, 1);
+	} else {
+		line[len] = '\0';
+	}
+
+	restore_terminal_mode(fd, &old_termios, changed);
+	if (fd != STDIN_FILENO)
+		close(fd);
+	return line;
+
+fail:
+	restore_terminal_mode(fd, &old_termios, changed);
+	if (fd != -1 && fd != STDIN_FILENO)
+		close(fd);
+	free(line);
+	return NULL;
+}
+
 static char *
 read_pam_line(int echo, const char *prompt)
 {
-	struct termios old_termios, new_termios;
-	bool changed = false;
 	char *line = NULL;
+	FILE *stream = NULL;
 	size_t cap = 0;
 	ssize_t nread;
+	int fd = -1;
+
+	if (!echo)
+		return read_pam_tty_secret(prompt);
+
+	fd = open_prompt_fd();
+	if (fd == -1)
+		return NULL;
 
 	if (prompt && fputs(prompt, stderr) == EOF)
-		return NULL;
+		goto fail;
 	fflush(stderr);
 
-	if (!echo && isatty(STDIN_FILENO)) {
-		if (tcgetattr(STDIN_FILENO, &old_termios) == 0) {
-			new_termios = old_termios;
-			new_termios.c_lflag &= ~(ECHO);
-			if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &new_termios) == 0)
-				changed = true;
-		}
+	if (fd == STDIN_FILENO) {
+		stream = stdin;
+	} else {
+		stream = fdopen(fd, "r");
+		if (!stream)
+			goto fail;
 	}
 
-	nread = getline(&line, &cap, stdin);
+	nread = getline(&line, &cap, stream);
 	if (nread == -1) {
-		if (changed) {
-			tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
-			fputc('\n', stderr);
-			fflush(stderr);
-		}
-		free(line);
-		return NULL;
+		goto fail;
 	}
-
-	if (changed) {
-		tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
-		fputc('\n', stderr);
-		fflush(stderr);
-	}
-
 	if (nread > 0 && line[nread - 1] == '\n')
 		line[nread - 1] = '\0';
 
+	if (stream && stream != stdin)
+		fclose(stream);
 	return line;
+
+fail:
+	if (stream && stream != stdin)
+		fclose(stream);
+	else if (fd != -1 && fd != STDIN_FILENO)
+		close(fd);
+	free(line);
+	return NULL;
 }
 
 static int
@@ -143,11 +336,12 @@ restore_umask(mode_t old_umask)
 static bool
 get_tty_path(const char *user, const char *scope, char *buf, size_t len)
 {
-	char *tty = ttyname(STDIN_FILENO);
+	char tty_path[PATH_MAX];
+	char *tty = tty_path;
 	char *p;
 	int n;
 
-	if (!tty)
+	if (!get_controlling_tty_path(tty_path, sizeof(tty_path)))
 		return false;
 
 	if (strncmp(tty, "/dev/", 5) == 0)
@@ -311,8 +505,6 @@ check_persist(const char *user, const char *scope_key,
 	if (nread < 0 || offset != expected_len)
 		return false;
 
-	if (limit == -1)
-		return true;
 	if (limit < 0)
 		return false;
 	if (now == (time_t)-1)
@@ -324,6 +516,20 @@ check_persist(const char *user, const char *scope_key,
 		return false;
 
 	return true;
+}
+
+static int
+set_pam_context_items(pam_handle_t *pamh, const char *user)
+{
+	char tty_path[PATH_MAX];
+	int retval;
+
+	retval = pam_set_item(pamh, PAM_RUSER, user);
+	if (retval != PAM_SUCCESS)
+		return retval;
+	if (!get_controlling_tty_path(tty_path, sizeof(tty_path)))
+		return PAM_SUCCESS;
+	return pam_set_item(pamh, PAM_TTY, tty_path);
 }
 
 static void
@@ -419,6 +625,45 @@ legacy:
 		die("unlink: %s: %s", path, strerror(errno));
 }
 
+void
+reset_all_persistence(const char *user)
+{
+	char path[PATH_MAX];
+	char prefix[PATH_MAX];
+	char *prefix_name;
+	DIR *dir;
+	struct dirent *ent;
+	size_t prefix_name_len;
+
+	validate_persist_dir();
+	snprintf(prefix, sizeof(prefix), "%s/%s_", ELEV_RUN, user);
+	prefix_name = prefix + strlen(ELEV_RUN) + 1;
+	prefix_name_len = strlen(prefix_name);
+
+	dir = opendir(ELEV_RUN);
+	if (!dir) {
+		if (errno == ENOENT)
+			return;
+		die("opendir: %s: %s", ELEV_RUN, strerror(errno));
+	}
+
+	while ((ent = readdir(dir)) != NULL) {
+		if (strncmp(ent->d_name, prefix_name, prefix_name_len) != 0)
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", ELEV_RUN, ent->d_name);
+		if (unlink(path) == -1 && errno != ENOENT) {
+			closedir(dir);
+			die("unlink: %s: %s", path, strerror(errno));
+		}
+	}
+
+	closedir(dir);
+
+	get_legacy_notty_path(user, path, sizeof(path));
+	if (unlink(path) == -1 && errno != ENOENT)
+		die("unlink: %s: %s", path, strerror(errno));
+}
+
 int
 authenticate_pam(const char *user, const char *cache_scope,
 	const char *cache_scope_data,
@@ -444,6 +689,12 @@ authenticate_pam(const char *user, const char *cache_scope,
 	retval = pam_start("elev", user, &conv, &pamh);
 	if (retval != PAM_SUCCESS)
 		return -1;
+
+	retval = set_pam_context_items(pamh, user);
+	if (retval != PAM_SUCCESS) {
+		pam_end(pamh, retval);
+		return -1;
+	}
 
 	if (!skip_auth) {
 		retval = pam_authenticate(pamh, 0);

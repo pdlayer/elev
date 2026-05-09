@@ -3,7 +3,7 @@
 elev \- execute a command as another user
 .SH SYNOPSIS
 .B elev
-[\fB\-h\fR] [\fB\-v\fR] [\fB\-k\fR] [\fB\-u\fR \fIuser\fR] \fIcommand\fR [\fIargument\fR ...]
+[\fB\-h\fR] [\fB\-v\fR] [\fB\-k\fR] [\fB\-K\fR] [\fB\-u\fR \fIuser\fR] \fIcommand\fR [\fIargument\fR ...]
 .SH DESCRIPTION
 .B elev
 allows a permitted user to execute a
@@ -12,19 +12,25 @@ as another user, as specified by the configuration file
 .IR /etc/elev/conf .
 By default, the command is executed as the superuser (root).
 .PP
-The execution environment is strictly sanitized for security. All environment 
-variables are cleared except for \fBTERM\fR, which is preserved if it exists. 
+The execution environment is strictly sanitized for security. All environment
+variables are cleared by default. \fBTERM\fR is preserved automatically when it
+exists, and additional locale-related variables may only be preserved when
+explicitly allowed by policy.
 The \fBPATH\fR variable is reset to a safe default value:
 .IP
 /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 .PP
-Users may be required to authenticate themselves via PAM before the command is 
+Users may be required to authenticate themselves via PAM before the command is
 executed, depending on the policy. Authentication can be cached using the 
 \fBpersist\fR option (see \fBelev\fR(5)).
 Persistence is only reused for invocations attached to a real TTY; non-TTY
 invocations always require fresh authentication.
 Cached authentication is scoped to the target user, matched rule, and command
 line.
+.PP
+Commands may be invoked either as explicit paths or as bare command names.
+Bare command names are resolved only through \fBelev\fR's fixed secure
+\fBPATH\fR.
 .PP
 \fBelev\fR is designed to stay portable across Linux, FreeBSD, NetBSD, and
 OpenBSD. macOS can also work, but may require a locally tailored PAM policy.
@@ -35,12 +41,16 @@ closes it after the command exits.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help
-Display a short help message and exit.
+Display command-line help with examples and exit.
 .TP
 .BR \-k ", " \-\-reset\-timestamp
 Invalidate the user's cached credentials (reset the persistence timestamp). 
 If no command is specified, \fBelev\fR will exit after resetting the timestamp. 
 This is equivalent to \fBsudo -k\fR.
+.TP
+.BR \-K ", " \-\-reset\-all\-timestamps
+Invalidate all cached credentials for the invoking user across every TTY scope.
+If no command is specified, \fBelev\fR will exit after resetting them.
 .TP
 .BR \-u " \fIuser\fR"
 Execute the command as the specified \fIuser\fR instead of \fBroot\fR.
@@ -61,6 +71,10 @@ value of 1.
 To run an interactive shell as root:
 .IP
 $ elev /bin/sh
+.PP
+To run a command resolved through the secure \fBPATH\fR:
+.IP
+$ elev id
 .PP
 To list the contents of a directory as the \fBwww-data\fR user:
 .IP

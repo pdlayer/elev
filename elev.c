@@ -4,6 +4,7 @@
 #include <getopt.h>
 #include <grp.h>
 #include <pwd.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,32 +17,19 @@
 
 #include "elev.h"
 
-static const char *forbidden_env[] = {
-	"ARGV0", "BASHOPTS", "BASH_ENV", "CDPATH", "CHARSET", "DYLD_FALLBACK_LIBRARY_PATH",
-	"DYLD_FALLBACK_FRAMEWORK_PATH", "DYLD_FRAMEWORK_PATH", "DYLD_INSERT_LIBRARIES",
-	"DYLD_LIBRARY_PATH", "ENV", "FPATH", "GCC_EXEC_PREFIX", "GCONV_PATH", "GEM_HOME",
-	"GEM_PATH", "GETCONF_DIR", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL",
-	"GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_SYSTEM", "GIT_EXEC_PATH",
-	"GLIBC_TUNABLES", "HOME", "HOSTALIASES", "IFS", "INPUTRC", "INSIDE_EMACS",
-	"JAVA_TOOL_OPTIONS", "LESSCLOSE", "LESSOPEN", "LOCALDOMAIN", "LOGNAME", "LPATH",
-	"LUA_CPATH", "LUA_INIT", "LUA_INIT_5_1", "LUA_INIT_5_2", "LUA_INIT_5_3", "LUA_INIT_5_4",
-	"LUA_PATH", "MALLOC_ARENA_MAX", "MALLOC_CHECK_", "MALLOC_CONF", "MALLOC_TRACE", "NLSPATH",
-	"NODE_OPTIONS", "PERL5DB", "PERL5LIB", "PERL5OPT", "PERLIO_DEBUG", "PERLLIB",
-	"PYTHONBREAKPOINT", "PYTHONDONTWRITEBYTECODE", "PYTHONHOME", "PYTHONINSPECT",
-	"PYTHONPATH", "PYTHONPROFILEIMPORTTIME", "PYTHONSTARTUP", "PYTHONUSERBASE", "RBENV_DIR",
-	"RBENV_HOOK_PATH", "RBENV_ROOT", "RES_OPTIONS", "RUBYLIB", "RUBYOPT", "SHELL", "TERM",
-	"TERMINFO", "TERMINFO_DIRS", "TERMPATH", "TMPDIR", "USER", "XDG_CONFIG_DIRS",
-	"XDG_DATA_DIRS", "ZDOTDIR", NULL
-};
-static const char *forbidden_env_prefixes[] = {
-	"BASH_FUNC_", "DYLD_", "LD_", "LIBPATH", "LOCPATH", "MALLOC_", "PERLIO_",
-	"PYTHON", "RUBY", NULL
-};
+#define SAFE_PATH "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 static void print_banner(FILE *stream);
+static void print_synopsis(FILE *stream);
+static void print_help(FILE *stream);
+static void usage_error(const char *fmt, ...);
 static void close_fds_except(int keep_fd);
 static char *serialize_cache_scope(const struct context *ctx, const struct rule *match);
 static void write_errno_to_pipe(int fd, int err);
+static bool command_has_path_component(const char *cmd);
+static bool save_env_value(const char *name, char **slot, int *saved_errno);
+static bool apply_env_list(char **env, int *saved_errno);
+static void exec_command(char **argv);
 
 static void write_errno_to_pipe(int fd, int err) {
 	while (write(fd, &err, sizeof(err)) == -1 && errno == EINTR)
@@ -68,12 +56,6 @@ void die(const char *fmt, ...) {
 	exit(1);
 }
 
-static void usage(void) {
-	print_banner(stderr);
-	fprintf(stderr, "usage: elev [-v] [-k] [-u user] command [args...]\n");
-	exit(1);
-}
-
 static void print_banner(FILE *stream) {
 	fprintf(stream, "        .__               \n");
 	fprintf(stream, "  ____ |  |   _______  __\n");
@@ -88,17 +70,35 @@ static void print_version(void) {
 	print_banner(stdout);
 }
 
-static bool is_forbidden(const char *var) {
-	int i;
-	for (i = 0; forbidden_env[i]; i++) {
-		if (strcmp(var, forbidden_env[i]) == 0)
-			return true;
+static void print_synopsis(FILE *stream) {
+	fprintf(stream, "Usage: elev [options] command [args...]\n");
+}
+
+static void print_help(FILE *stream) {
+	print_banner(stream);
+	fprintf(stream, "Run a command as another user under /etc/elev/conf policy.\n\n");
+	print_synopsis(stream);
+	fprintf(stream, "\nOptions:\n");
+	fprintf(stream, "  -h, --help                  Show this help text and exit.\n");
+	fprintf(stream, "  -v, --version               Show version information and exit.\n");
+	fprintf(stream, "  -u user                     Run the command as user instead of root.\n");
+	fprintf(stream, "  -k, --reset-timestamp       Drop the current TTY authentication cache.\n");
+	fprintf(stream, "  -K, --reset-all-timestamps  Drop all authentication caches for this user.\n");
+}
+
+static void usage_error(const char *fmt, ...) {
+	va_list ap;
+
+	if (fmt) {
+		fprintf(stderr, "elev: ");
+		va_start(ap, fmt);
+		vfprintf(stderr, fmt, ap);
+		va_end(ap);
+		fprintf(stderr, "\n");
 	}
-	for (i = 0; forbidden_env_prefixes[i]; i++) {
-		if (strncmp(var, forbidden_env_prefixes[i],
-		    strlen(forbidden_env_prefixes[i])) == 0)
-			return true;
-	} return false;
+	print_synopsis(stderr);
+	fprintf(stderr, "Try 'elev --help' for more information.\n");
+	exit(1);
 }
 
 static void free_keep_vals(char *keep_vals[], int count) {
@@ -112,7 +112,20 @@ static bool safe_setenv(const char *name, const char *value) {
 }
 
 static bool is_allowed_pam_env(const char *name) {
-	return strcmp(name, "TERM") == 0;
+	return is_safe_keepenv_name(name);
+}
+
+static bool save_env_value(const char *name, char **slot, int *saved_errno) {
+	char *value = getenv(name);
+
+	*slot = NULL;
+	if (!value)
+		return true;
+	*slot = strdup(value);
+	if (*slot)
+		return true;
+	*saved_errno = ENOMEM;
+	return false;
 }
 
 static bool apply_pam_env_entry(const char *entry) {
@@ -127,11 +140,23 @@ static bool apply_pam_env_entry(const char *entry) {
 		return true;
 	memcpy(name, entry, name_len);
 	name[name_len] = '\0';
-	if (!valid_env_name(name) || is_forbidden(name))
-		return true;
 	if (!is_allowed_pam_env(name))
 		return true;
 	return safe_setenv(name, sep + 1);
+}
+
+static bool apply_env_list(char **env, int *saved_errno) {
+	int i;
+
+	if (!env)
+		return true;
+	for (i = 0; env[i]; i++) {
+		if (apply_pam_env_entry(env[i]))
+			continue;
+		*saved_errno = errno;
+		return false;
+	}
+	return true;
 }
 
 static bool set_target_env(const struct context *ctx) {
@@ -146,44 +171,24 @@ static bool set_target_env(const struct context *ctx) {
 
 static bool secure_env(struct rule *match, const struct context *ctx, char **pam_env) {
 	char *keep_vals[MAX_ENV_KEEP] = {0};
-	char *term, *saved_term = NULL;
+	char *saved_term = NULL;
 	int saved_errno = 0;
 	int i;
 	bool ok = false;
-	for (i = 0; i < match->keepenv_count; i++) {
-		if (is_forbidden(match->keepenv[i])) {
-			keep_vals[i] = NULL;
-			continue;
-		}
-		char *v = getenv(match->keepenv[i]);
-		if (v) {
-			keep_vals[i] = strdup(v);
-			if (!keep_vals[i]) {
-				saved_errno = ENOMEM;
-				goto out;
-			}
-		} else {
-			keep_vals[i] = NULL;
-		}
-	}
 
-	term = getenv("TERM");
-	if (term) {
-		saved_term = strdup(term);
-		if (!saved_term) {
-			saved_errno = ENOMEM;
+	for (i = 0; i < match->keepenv_count; i++) {
+		if (!save_env_value(match->keepenv[i], &keep_vals[i], &saved_errno))
 			goto out;
-		}
-	} else {
-		saved_term = NULL;
 	}
+	if (!save_env_value("TERM", &saved_term, &saved_errno))
+		goto out;
 
 	if (!clear_environment()) {
 		saved_errno = errno;
 		goto out;
 	}
 
-	if (!safe_setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")) {
+	if (!safe_setenv("PATH", SAFE_PATH)) {
 		saved_errno = errno;
 		goto out;
 	}
@@ -198,15 +203,8 @@ static bool secure_env(struct rule *match, const struct context *ctx, char **pam
 			goto out;
 		}
 	}
-
-	if (pam_env) {
-		for (i = 0; pam_env[i]; i++) {
-			if (!apply_pam_env_entry(pam_env[i])) {
-				saved_errno = errno;
-				goto out;
-			}
-		}
-	}
+	if (!apply_env_list(pam_env, &saved_errno))
+		goto out;
 
 	if (!set_target_env(ctx)) {
 		saved_errno = errno;
@@ -264,6 +262,10 @@ static void init_user_groups(struct context *ctx) {
 	}
 }
 
+static bool command_has_path_component(const char *cmd) {
+	return cmd && strchr(cmd, '/') != NULL;
+}
+
 static void init_target_user(struct context *ctx) {
 	struct passwd *pw;
 	char *end = NULL;
@@ -306,6 +308,12 @@ static void child_fail(int exec_pipe[2], int err, const char *msg) {
 	child_die("%s: %s", msg, strerror(err));
 }
 
+static void exec_command(char **argv) {
+	if (command_has_path_component(argv[0]))
+		execv(argv[0], argv);
+	execvp(argv[0], argv);
+}
+
 static void run_child(const struct context *ctx, struct rule *match, char **pam_env, int exec_pipe[2]) {
 	int exec_errno;
 	close(exec_pipe[0]);
@@ -319,21 +327,21 @@ static void run_child(const struct context *ctx, struct rule *match, char **pam_
 		child_fail(exec_pipe, errno, "secure_env");
 
 	close_fds_except(exec_pipe[1]);
-	execvp(ctx->cmd_argv[0], ctx->cmd_argv);
+	exec_command(ctx->cmd_argv);
 	exec_errno = errno;
 	write_errno_to_pipe(exec_pipe[1], exec_errno);
-	child_die("execvp: %s: %s", ctx->cmd_argv[0], strerror(exec_errno));
+	child_die("exec: %s: %s", ctx->cmd_argv[0], strerror(exec_errno));
 }
 
 static void log_exec_result(const struct context *ctx, int exec_pipe[2]) {
 	int exec_errno = 0;
 	close(exec_pipe[1]);
 	if (read(exec_pipe[0], &exec_errno, sizeof(exec_errno)) == 0) {
-		syslog(LOG_INFO, "started: %s as %s: %s", ctx->user, ctx->target_user,
+		syslog(LOG_INFO, "started: %s as %s: %s", ctx->user, ctx->target_name,
 		    ctx->cmd_argv[0]);
 	} else {
 		syslog(LOG_WARNING, "start failed: %s as %s: %s: %s", ctx->user,
-		    ctx->target_user, ctx->cmd_argv[0], strerror(exec_errno));
+		    ctx->target_name, ctx->cmd_argv[0], strerror(exec_errno));
 	}
 	close(exec_pipe[0]);
 	exec_pipe[0] = -1;
@@ -457,6 +465,7 @@ main(int argc, char **argv)
 	int ch;
 	int status;
 	bool reset_ts = false;
+	bool reset_all_ts = false;
 	bool pam_session_open = false;
 	bool pam_creds_established = false;
 
@@ -464,16 +473,20 @@ main(int argc, char **argv)
 		{"help", no_argument, 0, 'h'},
 		{"version", no_argument, 0, 'v'},
 		{"reset-timestamp", no_argument, 0, 'k'},
+		{"reset-all-timestamps", no_argument, 0, 'K'},
 		{0, 0, 0, 0}
 	};
 
 	openlog("elev", LOG_CONS | LOG_PID, LOG_AUTHPRIV);
 
 	ctx.target_user = "root";
-	while ((ch = getopt_long(argc, argv, "+u:vhk", long_options, NULL)) != -1) {
+	while ((ch = getopt_long(argc, argv, "+u:vhkK", long_options, NULL)) != -1) {
 		switch (ch) {
 		case 'k':
 			reset_ts = true;
+			break;
+		case 'K':
+			reset_all_ts = true;
 			break;
 		case 'u':
 			ctx.target_user = optarg;
@@ -482,17 +495,17 @@ main(int argc, char **argv)
 			print_version();
 			exit(0);
 		case 'h':
-			usage();
-			break;
+			print_help(stdout);
+			exit(0);
 		default:
-			usage();
+			usage_error(NULL);
 		}
 	}
 
 	argc -= optind;
 	argv += optind;
-	if (argc < 1 && !reset_ts)
-		usage();
+	if (argc < 1 && !reset_ts && !reset_all_ts)
+		usage_error("missing command");
 	ctx.cmd_argv = argv;
 	ctx.cmd_argc = argc;
 
@@ -500,12 +513,15 @@ main(int argc, char **argv)
 
 	if (reset_ts) {
 		reset_persistence(ctx.user);
-		if (argc < 1) {
-			free_context(&ctx);
-			return 0;
-		}
 	}
-	
+	if (reset_all_ts) {
+		reset_all_persistence(ctx.user);
+	}
+	if ((reset_ts || reset_all_ts) && argc < 1) {
+		free_context(&ctx);
+		return 0;
+	}
+
 	init_user_groups(&ctx);
 	init_target_user(&ctx);
 
@@ -516,7 +532,7 @@ main(int argc, char **argv)
 	match = find_matching_rule(rules, &ctx);
 
 	if (!match || match->type == RULE_DENY) {
-		syslog(LOG_WARNING, "denied: %s as %s: %s", ctx.user, ctx.target_user, ctx.cmd_argv[0]);
+		syslog(LOG_WARNING, "denied: %s as %s: %s", ctx.user, ctx.target_name, ctx.cmd_argv[0]);
 		die("access denied");
 	}
 
@@ -526,7 +542,7 @@ main(int argc, char **argv)
 	if (authenticate_pam(ctx.user, cache_scope, cache_scope_data,
 	    match->nopass, match->persist,
 	    &pamh, &pam_session_open, &pam_creds_established) != 0) {
-		syslog(LOG_WARNING, "auth failed: %s as %s", ctx.user, ctx.target_user);
+		syslog(LOG_WARNING, "auth failed: %s as %s", ctx.user, ctx.target_name);
 		free(cache_scope_data);
 		die("auth failed");
 	}

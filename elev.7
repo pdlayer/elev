@@ -24,7 +24,7 @@ target command.
 .IP \(bu 3
 Authentication persistence is limited to real TTY sessions, stored in a
 root-owned runtime directory, and scoped to the target user, matched rule, and
-command line.
+command line. Bare \fBpersist\fR rules default to 5 minutes.
 .SH NON-GOALS
 .IP \(bu 3
 \fBelev\fR does not try to sandbox the program you allowed.
@@ -42,7 +42,11 @@ Prefer small allowlists over broad user or group grants.
 .IP \(bu 3
 Treat \fBnopass\fR as a strong trust decision.
 .IP \(bu 3
-Use \fBkeepenv\fR sparingly and only for variables the target program truly needs.
+Use \fBkeepenv\fR sparingly; only \fBTERM\fR, \fBLANG\fR, \fBLANGUAGE\fR, and
+\fBLC_\fR locale variables can be preserved.
+.IP \(bu 3
+Prefer exact command paths in rules. Bare command names at invocation time are
+resolved only through \fBelev\fR's fixed secure \fBPATH\fR.
 .IP \(bu 3
 Do not grant shells or interpreters unless you intend to grant their full power.
 .SH OPERATIONS

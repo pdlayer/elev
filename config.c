@@ -49,6 +49,7 @@ static bool is_comment_or_empty(char *line) {
 
 static void free_rule_fields(struct rule *r) {
 	int i;
+
 	free(r->who);
 	free(r->as_user);
 	free(r->cmd);
@@ -57,8 +58,11 @@ static void free_rule_fields(struct rule *r) {
 		free(r->args[i]);
 	for (i = 0; i < r->keepenv_count; i++)
 		free(r->keepenv[i]);
-} static void config_error(size_t lineno, const char *fmt, ...) {
+}
+
+static void config_error(size_t lineno, const char *fmt, ...) {
 	va_list ap;
+
 	fprintf(stderr, "elev: config:%zu: ", lineno);
 	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap);
@@ -185,11 +189,37 @@ static bool parse_rule_type(const char *tok, struct rule *r, size_t lineno) {
 	return true;
 }
 
+static char *canonicalize_user_token(const char *tok, size_t lineno) {
+	struct passwd *pw;
+	char *end = NULL;
+	unsigned long uid;
+
+	if (strcmp(tok, "*") == 0)
+		return xstrdup(tok);
+
+	errno = 0;
+	uid = strtoul(tok, &end, 10);
+	if (errno == 0 && end && *end == '\0')
+		pw = getpwuid((uid_t)uid);
+	else
+		pw = getpwnam(tok);
+	if (!pw) {
+		config_error(lineno, "unknown user: %s", tok);
+		return NULL;
+	}
+	return xstrdup(pw->pw_name);
+}
+
 static bool add_keepenv(struct rule *r, const char *name, size_t lineno) {
 	char *value = xstrdup(name);
 	char *trimmed = trim(value);
 	if (!valid_env_name(trimmed)) {
 		config_error(lineno, "invalid keepenv name: %s", trimmed);
+		free(value);
+		return false;
+	}
+	if (!is_safe_keepenv_name(trimmed)) {
+		config_error(lineno, "unsafe keepenv name: %s", trimmed);
 		free(value);
 		return false;
 	}
@@ -242,7 +272,7 @@ static bool parse_rule_options(struct rule *r, char **p, char **tok, bool *ok, s
 				return false;
 			}
 		} else if (strcmp(*tok, "persist") == 0) {
-			r->persist = -1;
+			r->persist = DEFAULT_PERSIST_SECONDS;
 		} else if (strcmp(*tok, "nopass") == 0) {
 			r->nopass = true;
 		} else if (strcmp(*tok, "keepenv") == 0) {
@@ -251,7 +281,8 @@ static bool parse_rule_options(struct rule *r, char **p, char **tok, bool *ok, s
 		} else {
 			return true;
 		}
-	} return check_unterminated(*ok, lineno);
+	}
+	return check_unterminated(*ok, lineno);
 }
 
 static bool parse_subject(struct rule *r, char *tok, size_t lineno) {
@@ -284,12 +315,15 @@ static bool parse_target_user(struct rule *r, char **p, bool *ok, size_t lineno)
 		config_error(lineno, "missing target user");
 		return false;
 	}
-	r->as_user = xstrdup(tok);
+	r->as_user = canonicalize_user_token(tok, lineno);
+	if (!r->as_user)
+		return false;
 	return true;
 }
 
 static bool parse_command_args(struct rule *r, char **p, bool *ok, size_t lineno) {
 	char *tok;
+
 	while ((tok = next_token(p, ok))) {
 		if (!check_unterminated(*ok, lineno))
 			return false;
@@ -300,7 +334,8 @@ static bool parse_command_args(struct rule *r, char **p, bool *ok, size_t lineno
 			return false;
 		}
 		r->args[r->argc++] = xstrdup(tok);
-	} return check_unterminated(*ok, lineno);
+	}
+	return check_unterminated(*ok, lineno);
 }
 
 static bool parse_command_clause(struct rule *r, char **p, bool *ok, size_t lineno) {
@@ -318,6 +353,7 @@ static bool parse_command_clause(struct rule *r, char **p, bool *ok, size_t line
 
 static bool parse_command_spec(struct rule *r, char **p, bool *ok, size_t lineno) {
 	char *tok;
+
 	while ((tok = next_token(p, ok))) {
 		if (!check_unterminated(*ok, lineno))
 			return false;
@@ -330,7 +366,8 @@ static bool parse_command_spec(struct rule *r, char **p, bool *ok, size_t lineno
 		}
 		config_error(lineno, "unexpected token: %s", tok);
 		return false;
-	} return check_unterminated(*ok, lineno);
+	}
+	return check_unterminated(*ok, lineno);
 }
 
 static struct rule *parse_rule_line(char *line, size_t lineno) {
@@ -530,7 +567,7 @@ bool match_rule(const struct rule *r, const struct context *ctx) {
 	}
 	if (!user_match)
 		return false;
-	if (strcmp(r->as_user, "*") != 0 && strcmp(r->as_user, ctx->target_user) != 0)
+	if (strcmp(r->as_user, "*") != 0 && strcmp(r->as_user, ctx->target_name) != 0)
 		return false;
 	if (r->deny_cmd && strcmp(r->deny_cmd, ctx->cmd_argv[0]) == 0)
 		return false;

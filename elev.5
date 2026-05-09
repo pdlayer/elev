@@ -41,7 +41,7 @@ Do not prompt the user for a password. Authentication is automatically considere
 \fBpersist\fR[\fB=\fR\fIduration\fR]
 Enable authentication caching. After a successful login, the user won't be prompted for a password for the specified \fIduration\fR.
 Units: \fBm\fR (minutes), \fBh\fR (hours), \fBd\fR (days). Example: \fBpersist=15m\fR.
-If no duration is specified, a default internal value is used.
+If no duration is specified, \fBelev\fR uses \fB5m\fR.
 Cached credentials are only trusted when the timestamp file lives in a
 root-owned runtime directory that is not writable by group or others.
 Each timestamp is scoped to the invoking user, TTY, target user, matched rule,
@@ -54,7 +54,7 @@ override it at build time.
 .TP
 \fBkeepenv {\fR\fIVARS\fR\fB}\fR
 Allows preserving specific environment variables from the user's session. \fIVARS\fR is a comma-separated list.
-Note: Certain dangerous variables (like \fBLD_PRELOAD\fR) are always stripped regardless of this setting.
+Only a small safe set is accepted: \fBTERM\fR, \fBLANG\fR, \fBLANGUAGE\fR, and variables whose names start with \fBLC_\fR. Any other name is rejected as a configuration error.
 
 .SS Matchers
 .TP
@@ -67,6 +67,9 @@ Specifies the user as whom the command will be run. Use \fB*\fR to allow running
 \fBcmd\fR \fIcommand\fR [\fIargs\fR]
 Restrict the rule to a specific absolute path of a command.
 If \fIargs\fR are provided, \fBelev\fR performs strict argument matching. You can specify multiple allowed values for an argument using commas (e.g., \fBcmd /bin/ls /tmp,/home\fR).
+The policy path remains absolute even when the user invokes a command by bare
+name; bare command names are resolved only through \fBelev\fR's fixed secure
+\fBPATH\fR.
 .TP
 \fBdenycmd\fR \fIcommand\fR
 An alternative way to explicitly block a specific command path.

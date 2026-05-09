@@ -12,6 +12,7 @@
 #ifndef ELEV_RUN
 #define ELEV_RUN "/var/run/elev"
 #endif
+#define DEFAULT_PERSIST_SECONDS 300
 #define MAX_ARGC 64
 #define MAX_ENV_KEEP 64
 
@@ -55,6 +56,7 @@ struct context {
 
 struct rule *parse_config(const char *path); bool match_rule(const struct rule *r, const struct context *ctx);
 void free_rule(struct rule *rule); void free_rules(struct rule *rules); bool valid_env_name(const char *name);
+bool is_safe_keepenv_name(const char *name);
 void free_env_list(char **env); void *xcalloc(size_t nmemb, size_t size); char *xstrdup(const char *s);
 bool clear_environment(void); int pipe_cloexec(int pipefd[2]);
 
@@ -65,6 +67,7 @@ int authenticate_pam(const char *user, const char *cache_scope,
 void cleanup_pam(pam_handle_t *pamh, bool session_open,
 	bool creds_established, int pam_status);
 void reset_persistence(const char *user);
+void reset_all_persistence(const char *user);
 void die(const char *fmt, ...) __attribute__((noreturn));
 
 
