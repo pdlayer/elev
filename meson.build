@@ -20,24 +20,35 @@ c_args = [
 link_args = []
 use_pie = false
 
+foreach arg : [
+  '-fstack-protector-strong',
+  '-fstack-clash-protection',
+  '-fcf-protection=full',
+  '-Wformat',
+  '-Werror=format-security',
+]
+  if cc.has_argument(arg)
+    c_args += [arg]
+  endif
+endforeach
+
+foreach arg : [
+  '-Wl,-z,relro,-z,now',
+  '-Wl,-z,noexecstack',
+]
+  if cc.has_link_argument(arg)
+    link_args += [arg]
+  endif
+endforeach
+
 if system == 'linux'
   c_args += [
     '-D_GNU_SOURCE',
-    '-fstack-protector-strong',
     '-D_FORTIFY_SOURCE=3',
   ]
   use_pie = true
-  link_args += [
-    '-Wl,-z,relro,-z,now',
-    '-Wl,-z,noexecstack',
-  ]
 elif ['freebsd', 'netbsd', 'openbsd'].contains(system)
-  c_args += [
-    '-fstack-protector-strong',
-  ]
   use_pie = true
-elif system == 'darwin'
-  c_args += ['-fstack-protector-strong']
 endif
 
 pam_dep = cc.find_library('pam', required : system != 'darwin')

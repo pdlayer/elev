@@ -1,7 +1,7 @@
 pkgname=elev
 pkgver=1.0.0
 pkgrel=1
-pkgdesc="sudo sucks."
+pkgdesc="Small PAM-backed setuid command runner with a compact policy language"
 arch=('x86_64')
 license=('BSD')
 depends=('pam')
