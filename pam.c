@@ -72,14 +72,9 @@ read_pam_tty_secret(const char *prompt)
 {
 	struct termios old_termios, new_termios;
 	char *line = NULL;
-	size_t len = 0, cap = 0;
+	FILE *stream = NULL;
+	size_t cap = 0;
 	bool changed = false;
-	bool esc = false;
-	bool csi = false;
-	bool osc = false;
-	bool esc_st = false;
-	bool ss3 = false;
-	unsigned char ch;
 	ssize_t nread;
 	int fd = -1;
 
@@ -94,121 +89,37 @@ read_pam_tty_secret(const char *prompt)
 	if (tcgetattr(fd, &old_termios) != 0)
 		goto fail;
 	new_termios = old_termios;
-	new_termios.c_lflag &= ~(ECHO | ICANON);
-	new_termios.c_iflag &= ~(ICRNL | INLCR);
-	new_termios.c_cc[VMIN] = 1;
-	new_termios.c_cc[VTIME] = 0;
+	new_termios.c_lflag &= ~ECHO;
 	if (tcsetattr(fd, TCSAFLUSH, &new_termios) != 0)
 		goto fail;
 	changed = true;
 
-	for (;;) {
-		nread = read(fd, &ch, 1);
-		if (nread == -1) {
-			if (errno == EINTR)
-				continue;
-			goto fail;
-		}
-		if (nread == 0)
-			goto fail;
-
-		if (osc) {
-			if (esc_st) {
-				esc_st = false;
-				if (ch == '\\') {
-					osc = false;
-					continue;
-				}
-			}
-			if (ch == '\a') {
-				osc = false;
-				continue;
-			}
-			esc_st = (ch == 0x1b);
-			continue;
-		}
-
-		if (csi) {
-			if (ch >= 0x40 && ch <= 0x7e)
-				csi = false;
-			continue;
-		}
-
-		if (ss3) {
-			if (ch >= 0x40 && ch <= 0x7e)
-				ss3 = false;
-			continue;
-		}
-
-		if (esc) {
-			esc = false;
-			if (ch == '[') {
-				csi = true;
-				continue;
-			}
-			if (ch == 'O') {
-				ss3 = true;
-				continue;
-			}
-			if (ch == ']' || ch == 'P' || ch == '_' || ch == '^' || ch == 'X') {
-				osc = true;
-				esc_st = false;
-				continue;
-			}
-			continue;
-		}
-
-		if (ch == 0x90 || ch == 0x98 || ch == 0x9d || ch == 0x9e || ch == 0x9f) {
-			osc = true;
-			esc_st = false;
-			continue;
-		}
-		if (ch == 0x8f) {
-			ss3 = true;
-			continue;
-		}
-		if (ch == 0x9b) {
-			csi = true;
-			continue;
-		}
-		if (ch == 0x1b) {
-			esc = true;
-			continue;
-		}
-		if (ch == '\n' || ch == '\r')
-			break;
-		if (ch == 0x7f || ch == '\b') {
-			if (len > 0)
-				len--;
-			continue;
-		}
-		if (ch < 0x20)
-			continue;
-		if (len + 1 >= cap) {
-			size_t new_cap = cap ? cap * 2 : 64;
-			char *new_line = realloc(line, new_cap);
-			if (!new_line)
-				goto fail;
-			line = new_line;
-			cap = new_cap;
-		}
-		line[len++] = (char)ch;
-	}
-
-	if (!line) {
-		line = xcalloc(1, 1);
+	if (fd == STDIN_FILENO) {
+		stream = stdin;
 	} else {
-		line[len] = '\0';
+		stream = fdopen(fd, "r");
+		if (!stream)
+			goto fail;
 	}
+
+	nread = getline(&line, &cap, stream);
+	if (nread == -1)
+		goto fail;
+	if (nread > 0 && line[nread - 1] == '\n')
+		line[nread - 1] = '\0';
 
 	restore_terminal_mode(fd, &old_termios, changed);
-	if (fd != STDIN_FILENO)
+	if (stream && stream != stdin)
+		fclose(stream);
+	else if (fd != STDIN_FILENO)
 		close(fd);
 	return line;
 
 fail:
 	restore_terminal_mode(fd, &old_termios, changed);
-	if (fd != -1 && fd != STDIN_FILENO)
+	if (stream && stream != stdin)
+		fclose(stream);
+	else if (fd != -1 && fd != STDIN_FILENO)
 		close(fd);
 	free(line);
 	return NULL;
@@ -262,14 +173,33 @@ fail:
 	return NULL;
 }
 
+static char *
+format_password_prompt(const char *user, const char *prompt)
+{
+	int n;
+
+	if (!user || !*user)
+		return prompt ? xstrdup(prompt) : NULL;
+	if (prompt && strcmp(prompt, "Password: ") != 0 &&
+	    strcmp(prompt, "Password:") != 0)
+		return xstrdup(prompt);
+
+	n = snprintf(NULL, 0, "Password for %s: ", user);
+	if (n < 0)
+		return NULL;
+
+	char *formatted = xcalloc((size_t)n + 1, sizeof(char));
+	snprintf(formatted, (size_t)n + 1, "Password for %s: ", user);
+	return formatted;
+}
+
 static int
 pam_conversation(int num_msg, const struct pam_message **msg,
 	struct pam_response **resp, void *appdata_ptr)
 {
 	struct pam_response *replies;
+	const char *user = appdata_ptr;
 	int i;
-
-	(void)appdata_ptr;
 
 	if (num_msg <= 0 || !msg || !resp)
 		return PAM_CONV_ERR;
@@ -277,11 +207,14 @@ pam_conversation(int num_msg, const struct pam_message **msg,
 	replies = xcalloc((size_t)num_msg, sizeof(*replies));
 	for (i = 0; i < num_msg; i++) {
 		switch (msg[i]->msg_style) {
-		case PAM_PROMPT_ECHO_OFF:
-			replies[i].resp = read_pam_line(0, msg[i]->msg);
+		case PAM_PROMPT_ECHO_OFF: {
+			char *prompt = format_password_prompt(user, msg[i]->msg);
+			replies[i].resp = read_pam_line(0, prompt);
+			free(prompt);
 			if (!replies[i].resp)
 				goto fail;
 			break;
+		}
 		case PAM_PROMPT_ECHO_ON:
 			replies[i].resp = read_pam_line(1, msg[i]->msg);
 			if (!replies[i].resp)
@@ -315,11 +248,6 @@ fail:
 	free(replies);
 	return PAM_CONV_ERR;
 }
-
-static struct pam_conv conv = {
-	pam_conversation,
-	NULL
-};
 
 static mode_t
 set_private_umask(void)
@@ -671,6 +599,10 @@ authenticate_pam(const char *user, const char *cache_scope,
 	pam_handle_t **pamh_out, bool *session_open, bool *creds_established)
 {
 	pam_handle_t *pamh = NULL;
+	struct pam_conv conv = {
+		pam_conversation,
+		(void *)user
+	};
 	int retval;
 	bool opened = false;
 	bool creds = false;

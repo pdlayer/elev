@@ -12,6 +12,7 @@
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <syslog.h>
+#include <termios.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -30,6 +31,9 @@ static bool command_has_path_component(const char *cmd);
 static bool save_env_value(const char *name, char **slot, int *saved_errno);
 static bool apply_env_list(char **env, int *saved_errno);
 static void exec_command(char **argv);
+static int open_terminal_fd(void);
+static bool save_terminal_state(int *fd, struct termios *state);
+static void restore_terminal_state(int fd, const struct termios *state, bool saved);
 
 static void write_errno_to_pipe(int fd, int err) {
 	while (write(fd, &err, sizeof(err)) == -1 && errno == EINTR)
@@ -99,6 +103,39 @@ static void usage_error(const char *fmt, ...) {
 	print_synopsis(stderr);
 	fprintf(stderr, "Try 'elev --help' for more information.\n");
 	exit(1);
+}
+
+static int open_terminal_fd(void) {
+	int fd;
+
+	fd = open("/dev/tty", O_RDONLY | O_CLOEXEC);
+	if (fd != -1)
+		return fd;
+	if (isatty(STDIN_FILENO))
+		return STDIN_FILENO;
+	return -1;
+}
+
+static bool save_terminal_state(int *fd, struct termios *state) {
+	*fd = open_terminal_fd();
+	if (*fd == -1)
+		return false;
+	if (tcgetattr(*fd, state) == 0)
+		return true;
+	if (*fd != STDIN_FILENO)
+		close(*fd);
+	*fd = -1;
+	return false;
+}
+
+static void restore_terminal_state(int fd, const struct termios *state, bool saved) {
+	if (!saved)
+		return;
+	if (tcsetattr(fd, TCSANOW, state) != 0)
+		syslog(LOG_WARNING, "failed to restore terminal state: %s",
+		    strerror(errno));
+	if (fd != STDIN_FILENO)
+		close(fd);
 }
 
 static void free_keep_vals(char *keep_vals[], int count) {
@@ -462,12 +499,15 @@ main(int argc, char **argv)
 	char cache_scope[32];
 	char *cache_scope_data = NULL;
 	int exec_pipe[2] = {-1, -1};
+	int tty_fd = -1;
 	int ch;
 	int status;
 	bool reset_ts = false;
 	bool reset_all_ts = false;
 	bool pam_session_open = false;
 	bool pam_creds_established = false;
+	bool tty_state_saved = false;
+	struct termios tty_state;
 
 	static struct option long_options[] = {
 		{"help", no_argument, 0, 'h'},
@@ -547,11 +587,13 @@ main(int argc, char **argv)
 		die("auth failed");
 	}
 	pam_env = pamh ? pam_getenvlist(pamh) : NULL;
+	tty_state_saved = save_terminal_state(&tty_fd, &tty_state);
 
 	if (pipe_cloexec(exec_pipe) == -1) {
 		free(cache_scope_data);
 		free_env_list(pam_env);
 		cleanup_pam(pamh, pam_session_open, pam_creds_established, PAM_ABORT);
+		restore_terminal_state(tty_fd, &tty_state, tty_state_saved);
 		die("pipe: %s", strerror(errno));
 	}
 
@@ -561,6 +603,7 @@ main(int argc, char **argv)
 		free(cache_scope_data);
 		free_env_list(pam_env);
 		cleanup_pam(pamh, pam_session_open, pam_creds_established, PAM_ABORT);
+		restore_terminal_state(tty_fd, &tty_state, tty_state_saved);
 		die("fork: %s", strerror(errno));
 	}
 	if (pid == 0)
@@ -573,6 +616,7 @@ main(int argc, char **argv)
 	free_rules(rules);
 	free_env_list(pam_env);
 	status = wait_for_child(pid);
+	restore_terminal_state(tty_fd, &tty_state, tty_state_saved);
 	cleanup_pam(pamh, pam_session_open, pam_creds_established,
 	    status == 0 ? PAM_SUCCESS : PAM_ABORT);
 	return status;
